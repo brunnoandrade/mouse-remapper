@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<title>Mouse Remapper</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #f5f5f7;
+    color: #1d1d1f;
+    padding: 20px 24px;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1e1e1e; color: #f0f0f0; }
+    .card { background: #2b2b2d !important; border-color: #3a3a3c !important; }
+    .keybtn { background: #3a3a3c !important; color: #f0f0f0 !important; }
+    input[type="number"] { background: #3a3a3c; color: #f0f0f0; border-color: #555; }
+    #appSearch { background: #3a3a3c !important; border-color: #555 !important; color: #f0f0f0; }
+    .dropdown-list { background: #2b2b2d !important; border-color: #555 !important; }
+    .chip { background: #3a3a3c !important; color: #f0f0f0 !important; }
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 18px; font-size: 12px; opacity: 0.7; }
+  .card {
+    background: #fff;
+    border: 1px solid #e2e2e2;
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+  }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+  .row:last-child { margin-bottom: 0; }
+  .title { font-weight: 600; font-size: 13px; }
+  label.switch { position: relative; display: inline-block; width: 38px; height: 22px; flex-shrink: 0; }
+  label.switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; cursor: pointer; inset: 0; background-color: #ccc; transition: .2s; border-radius: 22px; }
+  .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 2px; bottom: 2px; background-color: white; transition: .2s; border-radius: 50%; }
+  input:checked + .slider { background-color: #34c759; }
+  input:checked + .slider:before { transform: translateX(16px); }
+  .keybtn {
+    border: 1px solid #d0d0d0; border-radius: 6px; padding: 6px 12px; font-size: 12px;
+    background: #f0f0f0; cursor: pointer; min-width: 110px;
+  }
+  .keybtn.capturing { border-color: #007aff; color: #007aff; }
+  .modifiers { display: flex; gap: 8px; margin-top: 6px; font-size: 11px; opacity: 0.85; }
+  .modifiers label { display: flex; align-items: center; gap: 3px; cursor: pointer; }
+  .small { font-size: 11px; opacity: 0.7; }
+  input[type="number"] { width: 60px; padding: 4px 6px; border-radius: 6px; border: 1px solid #d0d0d0; }
+  button.primary {
+    background: #007aff; color: white; border: none; border-radius: 8px;
+    padding: 9px 16px; font-size: 13px; cursor: pointer; width: 100%; margin-top: 6px;
+  }
+  button.primary:active { opacity: 0.8; }
+  #status { font-size: 12px; margin-top: 10px; min-height: 16px; }
+  .warn { color: #d97706; }
+  .ok { color: #16a34a; }
+  a { color: #007aff; }
+  .combo-wrapper { position: relative; margin-top: 8px; }
+  #appSearch {
+    width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid #d0d0d0; font-size: 13px; background: #fff; color: inherit;
+  }
+  .dropdown-list {
+    position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 10;
+    background: #fff; border: 1px solid #d0d0d0; border-radius: 8px;
+    max-height: 220px; overflow-y: auto; box-shadow: 0 6px 16px rgba(0,0,0,0.12);
+  }
+  .dropdown-item {
+    display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer; font-size: 13px;
+  }
+  .dropdown-item:hover, .dropdown-item.active { background: #007aff; color: #fff; }
+  .dropdown-item img, .chip img { width: 18px; height: 18px; border-radius: 4px; flex-shrink: 0; }
+  .dropdown-empty { padding: 10px; font-size: 12px; opacity: 0.6; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip {
+    display: flex; align-items: center; gap: 6px; background: #eef2ff; color: #1d1d1f;
+    border-radius: 999px; padding: 4px 10px 4px 6px; font-size: 12px;
+  }
+  .chip button {
+    border: none; background: none; cursor: pointer; font-size: 13px; line-height: 1;
+    opacity: 0.6; padding: 0; color: inherit;
+  }
+  .chip button:hover { opacity: 1; }
+</style>
+</head>
+<body>
+  <h1>Mouse Remapper</h1>
+  <p class="sub">Remapeia scroll e clique do meio do mouse para teclas do teclado.</p>
+
+  <div class="card" id="perm-card">
+    <div class="row">
+      <div>
+        <div class="title">Permissão de Acessibilidade</div>
+        <div class="small">Necessária para interceptar eventos do mouse no sistema.</div>
+      </div>
+    </div>
+    <button class="keybtn" style="width:100%; margin-top:8px;" onclick="openAccessibilityPrefs()">Abrir Preferências do Sistema</button>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <div class="title">Aplicar apenas nestes aplicativos</div>
+        <div class="small">O remapeamento só funciona quando um destes estiver em foco.</div>
+      </div>
+      <button class="keybtn" id="refreshApps">atualizar</button>
+    </div>
+
+    <div class="combo-wrapper">
+      <input type="text" id="appSearch" placeholder="Buscar aplicativo aberto..." autocomplete="off" />
+      <div id="appDropdown" class="dropdown-list" hidden></div>
+    </div>
+
+    <div id="selectedApps" class="chips"></div>
+    <div id="appListEmpty" class="small warn" style="display:none; margin-top:6px;">Nenhum app selecionado — o remapeamento está desativado.</div>
+  </div>
+
+  <div class="card" data-section="scrollUp">
+    <div class="row">
+      <span class="title">Scroll para cima</span>
+      <label class="switch"><input type="checkbox" class="enabled" /><span class="slider"></span></label>
+    </div>
+    <div class="row">
+      <span class="small">Tecla:</span>
+      <button class="keybtn capture-key">clique e pressione</button>
+    </div>
+    <div class="modifiers"></div>
+  </div>
+
+  <div class="card" data-section="scrollDown">
+    <div class="row">
+      <span class="title">Scroll para baixo</span>
+      <label class="switch"><input type="checkbox" class="enabled" /><span class="slider"></span></label>
+    </div>
+    <div class="row">
+      <span class="small">Tecla:</span>
+      <button class="keybtn capture-key">clique e pressione</button>
+    </div>
+    <div class="modifiers"></div>
+  </div>
+
+  <div class="card" data-section="middleClick">
+    <div class="row">
+      <span class="title">Clique do meio (scroll click)</span>
+      <label class="switch"><input type="checkbox" class="enabled" /><span class="slider"></span></label>
+    </div>
+    <div class="row">
+      <span class="small">Tecla:</span>
+      <button class="keybtn capture-key">clique e pressione</button>
+    </div>
+    <div class="modifiers"></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <span class="small">Sensibilidade do scroll (menor = mais sensível)</span>
+      <input type="number" id="threshold" min="0.5" max="30" step="0.5" />
+    </div>
+    <div class="row">
+      <span class="small">Bloquear scroll original</span>
+      <label class="switch"><input type="checkbox" id="suppressScroll" /><span class="slider"></span></label>
+    </div>
+    <div class="row">
+      <span class="small">Bloquear clique do meio original</span>
+      <label class="switch"><input type="checkbox" id="suppressMiddle" /><span class="slider"></span></label>
+    </div>
+  </div>
+
+  <button class="primary" id="saveBtn">Salvar</button>
+  <div id="status"></div>
+
+  <script src="settings.js"></script>
+</body>
+</html>

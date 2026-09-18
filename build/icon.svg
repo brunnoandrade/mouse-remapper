@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4F6DF5"/>
+      <stop offset="100%" stop-color="#7A3FF2"/>
+    </linearGradient>
+    <linearGradient id="mouseBody" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#E7ECFF"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="226" fill="url(#bg)"/>
+
+  <g transform="translate(512 540)">
+    <path d="M -150 -80
+             C -150 -220 -80 -300 0 -300
+             C 80 -300 150 -220 150 -80
+             L 150 120
+             C 150 230 80 300 0 300
+             C -80 300 -150 230 -150 120
+             Z"
+          fill="url(#mouseBody)" stroke="#3548A6" stroke-width="14"/>
+
+    <line x1="0" y1="-300" x2="0" y2="-40" stroke="#3548A6" stroke-width="14"/>
+
+    <rect x="-26" y="-210" width="52" height="110" rx="26" fill="#4F6DF5"/>
+
+    <path d="M -150 -80 C -150 -220 -80 -300 0 -300 L 0 -40 L -150 -40 Z" fill="#FFFFFF" opacity="0.35"/>
+  </g>
+
+  <g transform="translate(512 830)" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" opacity="0.9">
+    <line x1="-90" y1="0" x2="-30" y2="0"/>
+    <line x1="30" y1="0" x2="90" y2="0"/>
+  </g>
+</svg>
