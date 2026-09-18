@@ -107,7 +107,6 @@ function createTray() {
 
 app.whenReady().then(() => {
   ensureConfig();
-  app.dock?.hide();
   createTray();
   startHelper();
   createSettingsWindow();
