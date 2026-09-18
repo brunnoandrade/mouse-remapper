@@ -176,6 +176,13 @@ function renderDropdown(filterText) {
 async function renderAppList() {
   availableApps = await window.api.listApps();
   if (!state.targetApps) state.targetApps = [];
+
+  const missingIds = state.targetApps.filter((id) => !appById(id));
+  if (missingIds.length > 0) {
+    const resolved = await window.api.resolveApps(missingIds);
+    availableApps = availableApps.concat(resolved);
+  }
+
   renderChips();
 }
 

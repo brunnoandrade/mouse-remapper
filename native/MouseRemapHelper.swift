@@ -9,8 +9,8 @@ struct RunningAppInfo: Codable {
     var iconBase64: String?
 }
 
-func iconBase64(for app: NSRunningApplication) -> String? {
-    guard let icon = app.icon else { return nil }
+func iconBase64(from icon: NSImage?) -> String? {
+    guard let icon = icon else { return nil }
     let size = NSSize(width: 32, height: 32)
     let resized = NSImage(size: size)
     resized.lockFocus()
@@ -20,6 +20,31 @@ func iconBase64(for app: NSRunningApplication) -> String? {
           let rep = NSBitmapImageRep(data: tiff),
           let png = rep.representation(using: .png, properties: [:]) else { return nil }
     return png.base64EncodedString()
+}
+
+func iconBase64(for app: NSRunningApplication) -> String? {
+    iconBase64(from: app.icon)
+}
+
+// MARK: - Resolve apps mode (used to look up name/icon for apps that
+// are configured as targets but may not currently be running)
+
+if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("--resolve-apps=") }) {
+    let bundleIds = arg.dropFirst("--resolve-apps=".count).split(separator: ",").map(String.init)
+    let apps: [RunningAppInfo] = bundleIds.compactMap { bundleId in
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else { return nil }
+        let name = FileManager.default.displayName(atPath: url.path)
+            .replacingOccurrences(of: ".app", with: "")
+        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        return RunningAppInfo(name: name, bundleIdentifier: bundleId, iconBase64: iconBase64(from: icon))
+    }
+
+    if let data = try? JSONEncoder().encode(apps), let json = String(data: data, encoding: .utf8) {
+        print(json)
+    } else {
+        print("[]")
+    }
+    exit(0)
 }
 
 if CommandLine.arguments.contains("--list-apps") {

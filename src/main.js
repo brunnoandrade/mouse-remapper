@@ -145,3 +145,21 @@ ipcMain.handle('apps:list', () => {
     child.on('error', () => resolve([]));
   });
 });
+
+ipcMain.handle('apps:resolve', (_evt, bundleIds) => {
+  return new Promise((resolve) => {
+    if (!bundleIds || bundleIds.length === 0) return resolve([]);
+    const bin = helperBinaryPath();
+    const child = spawn(bin, [`--resolve-apps=${bundleIds.join(',')}`], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.on('close', () => {
+      try {
+        resolve(JSON.parse(out));
+      } catch {
+        resolve([]);
+      }
+    });
+    child.on('error', () => resolve([]));
+  });
+});
