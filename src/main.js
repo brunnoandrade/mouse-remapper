@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, nativeTheme, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -15,7 +15,10 @@ const DEFAULT_CONFIG = {
   suppressOriginalScroll: true,
   suppressOriginalMiddleClick: true,
   targetApps: [],
+  theme: 'system',
 };
+
+const THEMES = ['system', 'light', 'dark'];
 
 function ensureConfig() {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
@@ -76,7 +79,7 @@ function createSettingsWindow() {
   }
   settingsWindow = new BrowserWindow({
     width: 480,
-    height: 620,
+    height: 690,
     resizable: false,
     title: 'Mouse Remapper',
     webPreferences: {
@@ -107,6 +110,8 @@ function createTray() {
 
 app.whenReady().then(() => {
   ensureConfig();
+  const { theme } = readConfig();
+  nativeTheme.themeSource = THEMES.includes(theme) ? theme : 'system';
   createTray();
   startHelper();
   createSettingsWindow();
@@ -123,6 +128,12 @@ app.on('before-quit', () => {
 ipcMain.handle('config:get', () => readConfig());
 ipcMain.handle('config:set', (_evt, cfg) => {
   writeConfig(cfg);
+  return true;
+});
+ipcMain.handle('theme:set', (_evt, theme) => {
+  if (!THEMES.includes(theme)) return false;
+  nativeTheme.themeSource = theme;
+  writeConfig({ ...readConfig(), theme });
   return true;
 });
 ipcMain.handle('prefs:accessibility', () => {

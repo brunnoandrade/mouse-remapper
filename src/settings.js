@@ -196,8 +196,26 @@ appSearchInput.addEventListener('blur', () => {
 
 document.getElementById('refreshApps').addEventListener('click', renderAppList);
 
+function renderTheme() {
+  const current = state.theme || 'system';
+  for (const btn of document.querySelectorAll('#themeSelect button')) {
+    const selected = btn.dataset.theme === current;
+    btn.classList.toggle('selected', selected);
+    btn.setAttribute('aria-checked', selected);
+  }
+}
+
+document.getElementById('themeSelect').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-theme]');
+  if (!btn) return;
+  state.theme = btn.dataset.theme;
+  renderTheme();
+  await window.api.setTheme(state.theme); // applies immediately and persists
+});
+
 async function init() {
   state = await window.api.getConfig();
+  renderTheme();
   for (const name of sections) renderSection(name);
   document.getElementById('threshold').value = state.scrollThreshold;
   document.getElementById('suppressScroll').checked = state.suppressOriginalScroll;

@@ -20,6 +20,9 @@
     #appSearch { background: #3a3a3c !important; border-color: #555 !important; color: #f0f0f0; }
     .dropdown-list { background: #2b2b2d !important; border-color: #555 !important; }
     .chip { background: #3a3a3c !important; color: #f0f0f0 !important; }
+    .segmented { background: #3a3a3c !important; border-color: #555 !important; }
+    .segmented button { color: #f0f0f0 !important; }
+    .segmented button.selected { background: #636366 !important; }
   }
   h1 { font-size: 18px; margin: 0 0 4px; }
   p.sub { margin: 0 0 18px; font-size: 12px; opacity: 0.7; }
@@ -83,11 +86,28 @@
     opacity: 0.6; padding: 0; color: inherit;
   }
   .chip button:hover { opacity: 1; }
+  .segmented { display: inline-flex; padding: 2px; gap: 2px; background: #f0f0f0; border: 1px solid #d0d0d0; border-radius: 8px; }
+  .segmented button {
+    border: none; background: none; color: inherit; font-size: 12px; padding: 4px 12px;
+    border-radius: 6px; cursor: pointer;
+  }
+  .segmented button.selected { background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.2); font-weight: 600; }
 </style>
 </head>
 <body>
   <h1>Mouse Remapper</h1>
   <p class="sub">Remapeia scroll e clique do meio do mouse para teclas do teclado.</p>
+
+  <div class="card">
+    <div class="row">
+      <span class="title">Aparência</span>
+      <div class="segmented" id="themeSelect" role="radiogroup" aria-label="Aparência">
+        <button type="button" role="radio" data-theme="system">Sistema</button>
+        <button type="button" role="radio" data-theme="light">Claro</button>
+        <button type="button" role="radio" data-theme="dark">Escuro</button>
+      </div>
+    </div>
+  </div>
 
   <div class="card" id="perm-card">
     <div class="row">
