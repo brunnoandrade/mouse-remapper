@@ -35,20 +35,90 @@ function labelForCode(code) {
 
 const FLAG = { shift: 0x20000, control: 0x40000, option: 0x80000, command: 0x100000 };
 
-const sections = ['scrollUp', 'scrollDown', 'middleClick'];
+// Trigger `button` numbers are CGEvent button numbers: 2 = middle, 3 = back, 4 = forward, 5+ = extras.
+const TRIGGERS = [
+  { value: 'scroll:up', label: 'Scroll para cima', trigger: { type: 'scroll', direction: 'up' }, defaultKey: 126 },
+  { value: 'scroll:down', label: 'Scroll para baixo', trigger: { type: 'scroll', direction: 'down' }, defaultKey: 125 },
+  { value: 'button:2', label: 'Clique do meio', trigger: { type: 'button', button: 2 }, defaultKey: 49 },
+  { value: 'button:3', label: 'Botão lateral (voltar)', trigger: { type: 'button', button: 3 }, defaultKey: 123 },
+  { value: 'button:4', label: 'Botão lateral (avançar)', trigger: { type: 'button', button: 4 }, defaultKey: 124 },
+  ...[5, 6, 7, 8].map((n) => ({ value: `button:${n}`, label: `Botão extra ${n}`, trigger: { type: 'button', button: n }, defaultKey: 49 })),
+];
+
+function triggerValue(t) {
+  return t.type === 'scroll' ? `scroll:${t.direction}` : `button:${t.button}`;
+}
+
+function triggerLabel(t) {
+  const known = TRIGGERS.find((x) => x.value === triggerValue(t));
+  return known ? known.label : `Botão ${t.button}`;
+}
+
+function defaultKeyFor(t) {
+  const known = TRIGGERS.find((x) => x.value === triggerValue(t));
+  return known ? known.defaultKey : 49;
+}
+
+// Ids must match performSystem() in native/MouseRemapHelper.swift.
+const ACTION_GROUPS = [
+  { label: 'Sistema', items: [
+    ['system:mission_control', 'Mission Control'],
+    ['system:space_left', 'Space à esquerda'],
+    ['system:space_right', 'Space à direita'],
+  ] },
+  { label: 'Captura de tela', items: [
+    ['system:screenshot_full', 'Tela inteira'],
+    ['system:screenshot_area', 'Área selecionada'],
+    ['system:screenshot_menu', 'Menu de captura'],
+  ] },
+  { label: 'Mídia', items: [
+    ['system:play_pause', 'Play / Pause'],
+    ['system:next_track', 'Próxima faixa'],
+    ['system:previous_track', 'Faixa anterior'],
+    ['system:volume_up', 'Volume +'],
+    ['system:volume_down', 'Volume −'],
+    ['system:mute', 'Mudo'],
+  ] },
+  { label: 'Clique', items: [
+    ['click:left', 'Clique esquerdo'],
+    ['click:right', 'Clique direito'],
+    ['click:double', 'Duplo clique'],
+  ] },
+];
+
+const ACTION_LABELS = Object.fromEntries(ACTION_GROUPS.flatMap((g) => g.items));
+
 let state = null;
 
-function buildModifiersUI(container, mapping, onChange) {
+function actionValue(action) {
+  if (action.type === 'system' || action.type === 'click') return `${action.type}:${action.id}`;
+  return action.type; // 'key' | 'app'
+}
+
+function actionFromValue(value, trigger, previous) {
+  if (value === 'key') {
+    const keepPrevious = previous.type === 'key';
+    return {
+      type: 'key',
+      keyCode: keepPrevious ? previous.keyCode : defaultKeyFor(trigger),
+      flags: keepPrevious ? previous.flags : 0,
+    };
+  }
+  if (value === 'app') return { type: 'app', bundleId: previous.type === 'app' ? previous.bundleId : '' };
+  const [type, id] = value.split(':');
+  return { type, id };
+}
+
+function buildModifiersUI(container, action) {
   container.innerHTML = '';
   const names = [['command', '⌘'], ['option', '⌥'], ['control', '⌃'], ['shift', '⇧']];
   for (const [key, glyph] of names) {
     const label = document.createElement('label');
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    cb.checked = !!(mapping.flags & FLAG[key]);
+    cb.checked = !!(action.flags & FLAG[key]);
     cb.addEventListener('change', () => {
-      mapping.flags = cb.checked ? (mapping.flags | FLAG[key]) : (mapping.flags & ~FLAG[key]);
-      onChange();
+      action.flags = cb.checked ? (action.flags | FLAG[key]) : (action.flags & ~FLAG[key]);
     });
     label.appendChild(cb);
     label.appendChild(document.createTextNode(glyph));
@@ -56,17 +126,37 @@ function buildModifiersUI(container, mapping, onChange) {
   }
 }
 
-function renderSection(name) {
-  const card = document.querySelector(`[data-section="${name}"]`);
-  const mapping = state[name];
-  const enabledCb = card.querySelector('.enabled');
-  const keyBtn = card.querySelector('.capture-key');
-  const modsContainer = card.querySelector('.modifiers');
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
 
-  enabledCb.checked = mapping.enabled;
-  enabledCb.onchange = () => { mapping.enabled = enabledCb.checked; };
+function buildActionSelect(current) {
+  const select = document.createElement('select');
+  const add = (parent, value, label) => {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    parent.appendChild(opt);
+  };
+  add(select, 'key', 'Tecla / atalho');
+  add(select, 'app', 'Abrir aplicativo');
+  for (const group of ACTION_GROUPS) {
+    const og = document.createElement('optgroup');
+    og.label = group.label;
+    for (const [value, label] of group.items) add(og, value, label);
+    select.appendChild(og);
+  }
+  select.value = actionValue(current);
+  return select;
+}
 
-  keyBtn.textContent = MAC_TO_LABEL[mapping.keyCode] || `código ${mapping.keyCode}`;
+function buildKeyRow(action) {
+  const row = el('div', 'row field');
+  row.appendChild(el('span', 'small', 'Tecla:'));
+  const keyBtn = el('button', 'keybtn', MAC_TO_LABEL[action.keyCode] || `código ${action.keyCode}`);
   keyBtn.onclick = () => {
     keyBtn.textContent = 'pressione uma tecla...';
     keyBtn.classList.add('capturing');
@@ -74,20 +164,233 @@ function renderSection(name) {
       e.preventDefault();
       const mac = CODE_TO_MAC[e.code];
       if (mac !== undefined) {
-        mapping.keyCode = mac;
-        keyBtn.textContent = MAC_TO_LABEL[mac] || e.code;
+        action.keyCode = mac;
       } else {
-        keyBtn.textContent = MAC_TO_LABEL[mapping.keyCode] || `código ${mapping.keyCode}`;
         setStatus('Tecla não suportada, tente outra.', 'warn');
       }
+      keyBtn.textContent = MAC_TO_LABEL[action.keyCode] || `código ${action.keyCode}`;
       keyBtn.classList.remove('capturing');
       window.removeEventListener('keydown', handler, true);
     };
     window.addEventListener('keydown', handler, true);
   };
-
-  buildModifiersUI(modsContainer, mapping, () => {});
+  row.appendChild(keyBtn);
+  return row;
 }
+
+function buildAppRow(action) {
+  const row = el('div', 'row field');
+  row.appendChild(el('span', 'small', 'Aplicativo:'));
+  const select = document.createElement('select');
+  const placeholder = el('option', '', 'Escolha um aplicativo...');
+  placeholder.value = '';
+  select.appendChild(placeholder);
+  const apps = availableApps.slice();
+  if (action.bundleId && !apps.some((a) => a.bundleIdentifier === action.bundleId)) {
+    apps.push({ name: action.bundleId, bundleIdentifier: action.bundleId });
+  }
+  for (const app of apps.sort((a, b) => a.name.localeCompare(b.name))) {
+    const opt = el('option', '', app.name);
+    opt.value = app.bundleIdentifier;
+    select.appendChild(opt);
+  }
+  select.value = action.bundleId || '';
+  select.onchange = () => { action.bundleId = select.value; };
+  row.appendChild(select);
+  return row;
+}
+
+function actionLabel(action) {
+  if (action.type === 'key') {
+    const glyphs = [['control', '⌃'], ['option', '⌥'], ['shift', '⇧'], ['command', '⌘']]
+      .filter(([name]) => action.flags & FLAG[name]).map(([, g]) => g).join('');
+    return glyphs + (MAC_TO_LABEL[action.keyCode] || `código ${action.keyCode}`);
+  }
+  if (action.type === 'app') {
+    const app = appById(action.bundleId);
+    return `Abrir ${app ? app.name : action.bundleId || '(nenhum app)'}`;
+  }
+  return ACTION_LABELS[actionValue(action)] || actionValue(action);
+}
+
+function renderMappings() {
+  const list = document.getElementById('mappings');
+  list.innerHTML = '';
+  if (state.mappings.length === 0) {
+    list.appendChild(el('div', 'empty', 'Nenhum mapeamento ainda. Clique em "+ Adicionar" para criar o primeiro.'));
+    return;
+  }
+
+  for (const mapping of state.mappings) {
+    const rule = el('div', 'rule');
+
+    const switchLabel = el('label', 'switch');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = mapping.enabled;
+    cb.onchange = () => { mapping.enabled = cb.checked; rule.classList.toggle('disabled', !cb.checked); };
+    switchLabel.appendChild(cb);
+    switchLabel.appendChild(el('span', 'slider'));
+    rule.appendChild(switchLabel);
+
+    const body = el('button', 'rule-body');
+    body.type = 'button';
+    body.title = 'Editar';
+    body.appendChild(el('span', 'rule-trigger', triggerLabel(mapping.trigger)));
+    body.appendChild(el('span', 'rule-arrow', '→'));
+    body.appendChild(el('span', 'rule-action', actionLabel(mapping.action)));
+    body.onclick = () => openEditor(mapping);
+    rule.appendChild(body);
+
+    const edit = el('button', 'icon-btn', '✎');
+    edit.type = 'button';
+    edit.title = 'Editar';
+    edit.onclick = () => openEditor(mapping);
+    rule.appendChild(edit);
+
+    const remove = el('button', 'icon-btn', '✕');
+    remove.type = 'button';
+    remove.title = 'Remover';
+    remove.onclick = () => {
+      state.mappings = state.mappings.filter((m) => m.id !== mapping.id);
+      renderMappings();
+    };
+    rule.appendChild(remove);
+
+    rule.classList.toggle('disabled', !mapping.enabled);
+    list.appendChild(rule);
+  }
+}
+
+// ---- Editor dialog ----
+
+const editorDialog = document.getElementById('editor');
+let stopDetecting = null;
+
+function buildTriggerSelect(draft) {
+  const select = document.createElement('select');
+  const options = TRIGGERS.map((t) => [t.value, t.label]);
+  if (!TRIGGERS.some((t) => t.value === triggerValue(draft.trigger))) {
+    options.push([triggerValue(draft.trigger), triggerLabel(draft.trigger)]); // e.g. a detected button 9
+  }
+  for (const [value, label] of options) {
+    const opt = el('option', '', label);
+    opt.value = value;
+    select.appendChild(opt);
+  }
+  select.value = triggerValue(draft.trigger);
+  return select;
+}
+
+// Listens for the next mouse button press. DOM button numbers differ from CGEvent's:
+// DOM 1 = middle (CG 2), DOM 3/4 = back/forward (CG 3/4). Left and right can't be remapped.
+function detectButton(onDetected, onCancel) {
+  const handler = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    stop();
+    if (e.button === 0 || e.button === 2) {
+      onCancel('Botões esquerdo e direito não podem ser remapeados.');
+      return;
+    }
+    onDetected(e.button === 1 ? 2 : e.button);
+  };
+  const stop = () => {
+    window.removeEventListener('mousedown', handler, true);
+    stopDetecting = null;
+  };
+  window.addEventListener('mousedown', handler, true);
+  stopDetecting = stop;
+}
+
+function openEditor(existing) {
+  const isNew = !existing;
+  const used = new Set(state.mappings.map((m) => triggerValue(m.trigger)));
+  const firstFree = TRIGGERS.find((t) => !used.has(t.value)) || TRIGGERS[0];
+  const draft = existing
+    ? structuredClone(existing)
+    : { id: crypto.randomUUID(), enabled: true, trigger: { ...firstFree.trigger }, action: { type: 'key', keyCode: firstFree.defaultKey, flags: 0 } };
+
+  const form = document.getElementById('editorBody');
+  const error = document.getElementById('editorError');
+  error.textContent = '';
+  document.getElementById('editorTitle').textContent = isNew ? 'Novo mapeamento' : 'Editar mapeamento';
+
+  function render() {
+    form.innerHTML = '';
+
+    const triggerRow = el('div', 'row field');
+    triggerRow.appendChild(el('span', 'small', 'Gatilho:'));
+    const triggerControls = el('div', 'inline');
+    const triggerSelect = buildTriggerSelect(draft);
+    triggerSelect.onchange = () => {
+      const untouchedKey = draft.action.type === 'key' && !draft.action.flags
+        && draft.action.keyCode === defaultKeyFor(draft.trigger);
+      draft.trigger = TRIGGERS.find((t) => t.value === triggerSelect.value).trigger;
+      if (untouchedKey) draft.action.keyCode = defaultKeyFor(draft.trigger);
+      render();
+    };
+    const detectBtn = el('button', 'keybtn', 'Detectar');
+    detectBtn.type = 'button';
+    detectBtn.style.width = 'auto';
+    detectBtn.onclick = () => {
+      if (stopDetecting) stopDetecting();
+      detectBtn.textContent = 'Pressione um botão...';
+      detectBtn.classList.add('capturing');
+      error.textContent = '';
+      detectButton(
+        (button) => { draft.trigger = { type: 'button', button }; render(); },
+        (message) => { error.textContent = message; render(); }
+      );
+    };
+    triggerControls.appendChild(triggerSelect);
+    triggerControls.appendChild(detectBtn);
+    triggerRow.appendChild(triggerControls);
+    form.appendChild(triggerRow);
+
+    const actionRow = el('div', 'row field');
+    actionRow.appendChild(el('span', 'small', 'Ação:'));
+    const actionSelect = buildActionSelect(draft.action);
+    actionSelect.onchange = () => {
+      draft.action = actionFromValue(actionSelect.value, draft.trigger, draft.action);
+      render();
+    };
+    actionRow.appendChild(actionSelect);
+    form.appendChild(actionRow);
+
+    if (draft.action.type === 'key') {
+      form.appendChild(buildKeyRow(draft.action));
+      const mods = el('div', 'modifiers');
+      buildModifiersUI(mods, draft.action);
+      form.appendChild(mods);
+    } else if (draft.action.type === 'app') {
+      form.appendChild(buildAppRow(draft.action));
+    }
+  }
+  render();
+
+  document.getElementById('editorSave').onclick = () => {
+    const conflict = state.mappings.find((m) => m.id !== draft.id && triggerValue(m.trigger) === triggerValue(draft.trigger));
+    if (conflict) {
+      error.textContent = `Já existe um mapeamento para "${triggerLabel(draft.trigger)}". Edite ou remova o existente.`;
+      return;
+    }
+    if (draft.action.type === 'app' && !draft.action.bundleId) {
+      error.textContent = 'Escolha um aplicativo.';
+      return;
+    }
+    const index = state.mappings.findIndex((m) => m.id === draft.id);
+    if (index >= 0) state.mappings[index] = draft;
+    else state.mappings.push(draft);
+    editorDialog.close();
+    renderMappings();
+  };
+  editorDialog.showModal();
+}
+
+editorDialog.addEventListener('close', () => { if (stopDetecting) stopDetecting(); });
+document.getElementById('editorCancel').onclick = () => editorDialog.close();
+document.getElementById('addMapping').addEventListener('click', () => openEditor(null));
 
 function setStatus(msg, kind) {
   const el = document.getElementById('status');
@@ -184,6 +487,7 @@ async function renderAppList() {
   }
 
   renderChips();
+  renderMappings(); // app names in the list need the app list
 }
 
 const appSearchInput = document.getElementById('appSearch');
@@ -216,17 +520,15 @@ document.getElementById('themeSelect').addEventListener('click', async (e) => {
 async function init() {
   state = await window.api.getConfig();
   renderTheme();
-  for (const name of sections) renderSection(name);
+  renderMappings();
   document.getElementById('threshold').value = state.scrollThreshold;
   document.getElementById('suppressScroll').checked = state.suppressOriginalScroll;
-  document.getElementById('suppressMiddle').checked = state.suppressOriginalMiddleClick;
   await renderAppList();
 }
 
 document.getElementById('saveBtn').addEventListener('click', async () => {
   state.scrollThreshold = parseFloat(document.getElementById('threshold').value) || 4;
   state.suppressOriginalScroll = document.getElementById('suppressScroll').checked;
-  state.suppressOriginalMiddleClick = document.getElementById('suppressMiddle').checked;
   await window.api.setConfig(state);
   setStatus('Salvo. As alterações já estão ativas.', 'ok');
   setTimeout(() => setStatus(''), 3000);

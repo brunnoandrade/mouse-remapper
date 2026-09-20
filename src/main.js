@@ -2,18 +2,16 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, nativeTheme, shell
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 
 const CONFIG_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'MouseRemapper');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 
 const DEFAULT_CONFIG = {
-  scrollUp: { enabled: false, keyCode: 126, flags: 0 },
-  scrollDown: { enabled: false, keyCode: 125, flags: 0 },
-  middleClick: { enabled: false, keyCode: 49, flags: 0 },
+  mappings: [],
   scrollThreshold: 4.0,
   suppressOriginalScroll: true,
-  suppressOriginalMiddleClick: true,
   targetApps: [],
   theme: 'system',
 };
@@ -27,10 +25,36 @@ function ensureConfig() {
   }
 }
 
+// Fixed per-trigger fields used by older configs, and the key each one defaulted to.
+const LEGACY_MAPPINGS = {
+  scrollUp: { trigger: { type: 'scroll', direction: 'up' }, defaultKey: 126 },
+  scrollDown: { trigger: { type: 'scroll', direction: 'down' }, defaultKey: 125 },
+  middleClick: { trigger: { type: 'button', button: 2 }, defaultKey: 49 },
+  sideBack: { trigger: { type: 'button', button: 3 }, defaultKey: 123 },
+  sideForward: { trigger: { type: 'button', button: 4 }, defaultKey: 124 },
+};
+
+// Older configs had one fixed field per trigger ({ enabled, keyCode, flags } or { enabled, action });
+// they become entries of the generic `mappings` list. Untouched, disabled defaults are dropped.
+function migrateConfig(cfg) {
+  if (Array.isArray(cfg.mappings)) return cfg;
+  const mappings = [];
+  for (const [key, { trigger, defaultKey }] of Object.entries(LEGACY_MAPPINGS)) {
+    const m = cfg[key];
+    if (!m) continue;
+    const action = m.action || { type: 'key', keyCode: m.keyCode, flags: m.flags || 0 };
+    const untouched = action.type === 'key' && action.keyCode === defaultKey && !action.flags;
+    if (!m.enabled && untouched) continue;
+    mappings.push({ id: crypto.randomUUID(), enabled: !!m.enabled, trigger, action });
+  }
+  const { scrollUp, scrollDown, middleClick, sideBack, sideForward, suppressOriginalMiddleClick, ...rest } = cfg;
+  return { ...rest, mappings };
+}
+
 function readConfig() {
   ensureConfig();
   try {
-    return { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) };
+    return { ...DEFAULT_CONFIG, ...migrateConfig(JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'))) };
   } catch {
     return DEFAULT_CONFIG;
   }
@@ -78,9 +102,10 @@ function createSettingsWindow() {
     return;
   }
   settingsWindow = new BrowserWindow({
-    width: 480,
-    height: 690,
-    resizable: false,
+    width: 980,
+    height: 680,
+    minWidth: 820,
+    minHeight: 560,
     title: 'Mouse Remapper',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -110,6 +135,7 @@ function createTray() {
 
 app.whenReady().then(() => {
   ensureConfig();
+  writeConfig(readConfig()); // persist the migrated shape before the helper starts
   const { theme } = readConfig();
   nativeTheme.themeSource = THEMES.includes(theme) ? theme : 'system';
   createTray();

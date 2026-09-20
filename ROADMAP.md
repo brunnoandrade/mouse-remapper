@@ -11,19 +11,22 @@ Legenda: ✅ feito · 🚧 em andamento · ⬜ pendente
 - ✅ Sensibilidade do scroll e bloqueio dos eventos originais
 - ✅ Ícone na bandeja
 - ✅ Tema Sistema / Claro / Escuro
+- ✅ Lista genérica de regras "gatilho → ação" (tecla, ação de sistema, clique ou abrir app), com editor
 
 ## Fase 1: base sólida
 
 - ⬜ Detectar a permissão de Acessibilidade e mostrar o status real (`AXIsProcessTrusted` no helper)
 - ⬜ Iniciar no login (`app.setLoginItemSettings`, com toggle nas configurações)
 - ⬜ Salvar automaticamente, no lugar do botão Salvar
-- ⬜ "Restaurar padrões" e validação de conflitos entre mapeamentos
+- ✅ Validação de conflitos: um gatilho não pode ter duas regras
+- ⬜ "Restaurar padrões"
 
-## Fase 2: mais gatilhos e ações
+## Fase 2: mais gatilhos e ações 🚧
 
-- ⬜ Suporte aos botões laterais (4/5) e a outros botões extras no event tap
-- ⬜ Modelo de ação genérico `{ type: 'key' | 'system' | 'app' | 'click', ... }` no lugar de `keyCode + flags`, com migração do config existente
-- ⬜ Catálogo de ações de sistema: Mission Control, Spaces, Launchpad, mídia, volume, screenshot
+- ✅ Botões laterais (voltar/avançar) no event tap
+- ✅ Botões extras (5+), por seleção ou detecção do botão
+- ✅ Modelo de ação genérico `{ type: 'key' | 'system' | 'app' | 'click', ... }` no lugar de `keyCode + flags`, com migração do config existente
+- ✅ Catálogo de ações de sistema: Mission Control, Spaces, mídia, volume, screenshot (Launchpad fica de fora: removido no macOS 26)
 
 ## Fase 3: perfis por app
 

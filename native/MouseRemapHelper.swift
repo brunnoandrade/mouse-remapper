@@ -66,29 +66,57 @@ if CommandLine.arguments.contains("--list-apps") {
 
 // MARK: - Config
 
-struct KeyMapping: Codable {
+/// What a trigger does. `type` selects which of the other fields apply:
+/// key -> keyCode/flags, system -> id, click -> id (left|right|double), app -> bundleId.
+struct Action: Codable {
+    var type: String
+    var keyCode: CGKeyCode?
+    var flags: UInt64? // CGEventFlags rawValue (modifiers)
+    var id: String?
+    var bundleId: String?
+}
+
+/// What fires a mapping. button: CGEvent button number (2 middle, 3 back, 4 forward, 5+ extras).
+/// scroll: direction "up" | "down".
+struct Trigger: Codable {
+    var type: String
+    var button: Int?
+    var direction: String?
+}
+
+struct Mapping: Codable {
+    var id: String?
     var enabled: Bool
-    var keyCode: CGKeyCode
-    var flags: UInt64 // CGEventFlags rawValue (modifiers)
+    var trigger: Trigger
+    var action: Action
 }
 
 struct Config: Codable {
-    var scrollUp: KeyMapping
-    var scrollDown: KeyMapping
-    var middleClick: KeyMapping
-    var scrollThreshold: Double // accumulated deltaY needed to fire one key press
+    var mappings: [Mapping]
+    var scrollThreshold: Double // accumulated deltaY needed to fire one action
     var suppressOriginalScroll: Bool
-    var suppressOriginalMiddleClick: Bool
     var targetApps: [String]? // bundle identifiers; remapping only applies while one of these is frontmost
+
+    private enum CodingKeys: String, CodingKey {
+        case mappings, scrollThreshold, suppressOriginalScroll, targetApps
+    }
+}
+
+extension Config {
+    // Lenient on purpose: a missing field must never make load() fall back to defaults and overwrite the user's file.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        mappings = try c.decodeIfPresent([Mapping].self, forKey: .mappings) ?? []
+        scrollThreshold = try c.decodeIfPresent(Double.self, forKey: .scrollThreshold) ?? 4.0
+        suppressOriginalScroll = try c.decodeIfPresent(Bool.self, forKey: .suppressOriginalScroll) ?? true
+        targetApps = try c.decodeIfPresent([String].self, forKey: .targetApps)
+    }
 }
 
 let defaultConfig = Config(
-    scrollUp: KeyMapping(enabled: false, keyCode: 126, flags: 0),      // Up arrow
-    scrollDown: KeyMapping(enabled: false, keyCode: 125, flags: 0),    // Down arrow
-    middleClick: KeyMapping(enabled: false, keyCode: 49, flags: 0),    // Space
+    mappings: [],
     scrollThreshold: 4.0,
     suppressOriginalScroll: true,
-    suppressOriginalMiddleClick: true,
     targetApps: []
 )
 
@@ -149,7 +177,7 @@ func ensureAccessibilityPermission() {
 
 ensureAccessibilityPermission()
 
-// MARK: - Key synthesis
+// MARK: - Action execution
 
 func postKey(keyCode: CGKeyCode, flags: CGEventFlags) {
     guard let source = CGEventSource(stateID: .hidSystemState) else { return }
@@ -159,6 +187,95 @@ func postKey(keyCode: CGKeyCode, flags: CGEventFlags) {
     up.flags = flags
     down.post(tap: .cghidEventTap)
     up.post(tap: .cghidEventTap)
+}
+
+// Media/volume keys are not regular key events: they are system-defined events (NX_KEYTYPE_*).
+func postMediaKey(_ key: Int32) {
+    func post(down: Bool) {
+        let state: Int32 = down ? 0xA : 0xB
+        let event = NSEvent.otherEvent(
+            with: .systemDefined,
+            location: .zero,
+            modifierFlags: NSEvent.ModifierFlags(rawValue: UInt(state << 8)),
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            subtype: 8,
+            data1: Int((key << 16) | (state << 8)),
+            data2: -1
+        )
+        event?.cgEvent?.post(tap: .cghidEventTap)
+    }
+    post(down: true)
+    post(down: false)
+}
+
+func postClick(kind: String, at location: CGPoint) {
+    let isRight = kind == "right"
+    let downType: CGEventType = isRight ? .rightMouseDown : .leftMouseDown
+    let upType: CGEventType = isRight ? .rightMouseUp : .leftMouseUp
+    let button: CGMouseButton = isRight ? .right : .left
+    let clicks = kind == "double" ? 2 : 1
+    for count in 1...clicks {
+        guard let down = CGEvent(mouseEventSource: nil, mouseType: downType, mouseCursorPosition: location, mouseButton: button),
+              let up = CGEvent(mouseEventSource: nil, mouseType: upType, mouseCursorPosition: location, mouseButton: button)
+        else { return }
+        down.setIntegerValueField(.mouseEventClickState, value: Int64(count))
+        up.setIntegerValueField(.mouseEventClickState, value: Int64(count))
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+    }
+}
+
+func openApp(bundleId: String) {
+    guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else {
+        FileHandle.standardError.write("[MouseRemapHelper] App not found: \(bundleId)\n".data(using: .utf8)!)
+        return
+    }
+    NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+}
+
+let cmd = CGEventFlags.maskCommand.rawValue
+let shift = CGEventFlags.maskShift.rawValue
+let ctrl = CGEventFlags.maskControl.rawValue
+
+func performSystem(_ id: String) {
+    switch id {
+    case "mission_control":
+        NSWorkspace.shared.openApplication(
+            at: URL(fileURLWithPath: "/System/Applications/Mission Control.app"),
+            configuration: NSWorkspace.OpenConfiguration()
+        )
+    // Spaces navigation relies on the default "Move left/right a space" shortcuts (Ctrl+←/→).
+    case "space_left": postKey(keyCode: 123, flags: CGEventFlags(rawValue: ctrl))
+    case "space_right": postKey(keyCode: 124, flags: CGEventFlags(rawValue: ctrl))
+    case "screenshot_full": postKey(keyCode: 20, flags: CGEventFlags(rawValue: cmd | shift))  // ⌘⇧3
+    case "screenshot_area": postKey(keyCode: 21, flags: CGEventFlags(rawValue: cmd | shift))  // ⌘⇧4
+    case "screenshot_menu": postKey(keyCode: 23, flags: CGEventFlags(rawValue: cmd | shift))  // ⌘⇧5
+    case "volume_up": postMediaKey(0)
+    case "volume_down": postMediaKey(1)
+    case "mute": postMediaKey(7)
+    case "play_pause": postMediaKey(16)
+    case "next_track": postMediaKey(17)
+    case "previous_track": postMediaKey(18)
+    default:
+        FileHandle.standardError.write("[MouseRemapHelper] Unknown system action: \(id)\n".data(using: .utf8)!)
+    }
+}
+
+func perform(_ action: Action, at location: CGPoint) {
+    switch action.type {
+    case "key":
+        postKey(keyCode: action.keyCode ?? 0, flags: CGEventFlags(rawValue: action.flags ?? 0))
+    case "system":
+        performSystem(action.id ?? "")
+    case "click":
+        postClick(kind: action.id ?? "left", at: location)
+    case "app":
+        if let bundleId = action.bundleId { openApp(bundleId: bundleId) }
+    default:
+        break
+    }
 }
 
 // MARK: - Scroll accumulation state
@@ -190,25 +307,30 @@ func eventTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
         let deltaY = event.getDoubleValueField(.scrollWheelEventDeltaAxis1)
         if deltaY == 0 { return Unmanaged.passUnretained(event) }
 
-        let mapping = deltaY > 0 ? cfg.scrollUp : cfg.scrollDown
-        guard mapping.enabled else { return Unmanaged.passUnretained(event) }
+        let direction = deltaY > 0 ? "up" : "down"
+        guard let mapping = cfg.mappings.first(where: {
+            $0.enabled && $0.trigger.type == "scroll" && $0.trigger.direction == direction
+        }) else { return Unmanaged.passUnretained(event) }
 
         scrollAccumulator += abs(deltaY)
         if scrollAccumulator >= cfg.scrollThreshold {
             scrollAccumulator = 0
-            postKey(keyCode: mapping.keyCode, flags: CGEventFlags(rawValue: mapping.flags))
+            perform(mapping.action, at: event.location)
         }
 
         return cfg.suppressOriginalScroll ? nil : Unmanaged.passUnretained(event)
 
     case .otherMouseDown, .otherMouseUp:
-        let buttonNumber = event.getIntegerValueField(.mouseEventButtonNumber)
-        guard buttonNumber == 2, cfg.middleClick.enabled else { return Unmanaged.passUnretained(event) }
+        let button = Int(event.getIntegerValueField(.mouseEventButtonNumber))
+        guard let mapping = cfg.mappings.first(where: {
+            $0.enabled && $0.trigger.type == "button" && $0.trigger.button == button
+        }) else { return Unmanaged.passUnretained(event) }
 
         if type == .otherMouseDown {
-            postKey(keyCode: cfg.middleClick.keyCode, flags: CGEventFlags(rawValue: cfg.middleClick.flags))
+            perform(mapping.action, at: event.location)
         }
-        return cfg.suppressOriginalMiddleClick ? nil : Unmanaged.passUnretained(event)
+        // Always swallowed when mapped, otherwise the native behavior (e.g. back/forward) would still fire.
+        return nil
 
     default:
         return Unmanaged.passUnretained(event)
