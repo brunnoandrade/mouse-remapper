@@ -89,10 +89,21 @@ const ACTION_GROUPS = [
 const ACTION_LABELS = Object.fromEntries(ACTION_GROUPS.flatMap((g) => g.items));
 
 let state = null;
+let selectedProfile = 'default'; // 'default' or a bundle id
+
+function profileOf(id) {
+  return id === 'default' ? state.defaultProfile : state.appProfiles[id];
+}
+
+// The profile whose mappings the list and editor are showing.
+function currentProfile() {
+  if (!profileOf(selectedProfile)) selectedProfile = 'default';
+  return profileOf(selectedProfile);
+}
 
 function actionValue(action) {
   if (action.type === 'system' || action.type === 'click') return `${action.type}:${action.id}`;
-  return action.type; // 'key' | 'app'
+  return action.type; // 'key' | 'app' | 'none'
 }
 
 function actionFromValue(value, trigger, previous) {
@@ -104,6 +115,7 @@ function actionFromValue(value, trigger, previous) {
       flags: keepPrevious ? previous.flags : 0,
     };
   }
+  if (value === 'none') return { type: 'none' };
   if (value === 'app') return { type: 'app', bundleId: previous.type === 'app' ? previous.bundleId : '' };
   const [type, id] = value.split(':');
   return { type, id };
@@ -142,6 +154,7 @@ function buildActionSelect(current) {
     parent.appendChild(opt);
   };
   add(select, 'key', 'Tecla / atalho');
+  add(select, 'none', 'Comportamento original (não remapear)');
   add(select, 'app', 'Abrir aplicativo');
   for (const group of ACTION_GROUPS) {
     const og = document.createElement('optgroup');
@@ -206,6 +219,7 @@ function actionLabel(action) {
       .filter(([name]) => action.flags & FLAG[name]).map(([, g]) => g).join('');
     return glyphs + (MAC_TO_LABEL[action.keyCode] || `código ${action.keyCode}`);
   }
+  if (action.type === 'none') return 'Original (sem remapear)';
   if (action.type === 'app') {
     const app = appById(action.bundleId);
     return `Abrir ${app ? app.name : action.bundleId || '(nenhum app)'}`;
@@ -213,15 +227,38 @@ function actionLabel(action) {
   return ACTION_LABELS[actionValue(action)] || actionValue(action);
 }
 
+function profileName(id) {
+  if (id === 'default') return 'Global';
+  const app = appById(id);
+  return app ? app.name : id;
+}
+
+function renderProfileHeader() {
+  const isDefault = selectedProfile === 'default';
+  document.getElementById('profileTitle').textContent = `Mapeamentos · ${profileName(selectedProfile)}`;
+  const hint = document.getElementById('profileHint');
+  if (isDefault && !state.defaultProfile.enabled) {
+    hint.textContent = 'Perfil global desativado: só os apps com perfil próprio são remapeados.';
+    hint.className = 'small warn';
+  } else {
+    hint.textContent = isDefault
+      ? 'Vale em todos os apps que não têm perfil próprio.'
+      : 'Neste app, estas regras valem no lugar das globais para o mesmo gatilho. Os demais gatilhos continuam usando as globais.';
+    hint.className = 'small';
+  }
+}
+
 function renderMappings() {
+  renderProfileHeader();
+  renderProfiles(); // keeps the per-profile rule counts current
   const list = document.getElementById('mappings');
   list.innerHTML = '';
-  if (state.mappings.length === 0) {
+  if (currentProfile().mappings.length === 0) {
     list.appendChild(el('div', 'empty', 'Nenhum mapeamento ainda. Clique em "+ Adicionar" para criar o primeiro.'));
     return;
   }
 
-  for (const mapping of state.mappings) {
+  for (const mapping of currentProfile().mappings) {
     const rule = el('div', 'rule');
 
     const switchLabel = el('label', 'switch');
@@ -252,7 +289,8 @@ function renderMappings() {
     remove.type = 'button';
     remove.title = 'Remover';
     remove.onclick = () => {
-      state.mappings = state.mappings.filter((m) => m.id !== mapping.id);
+      const profile = currentProfile();
+      profile.mappings = profile.mappings.filter((m) => m.id !== mapping.id);
       renderMappings();
       scheduleSave();
     };
@@ -306,7 +344,7 @@ function detectButton(onDetected, onCancel) {
 
 function openEditor(existing) {
   const isNew = !existing;
-  const used = new Set(state.mappings.map((m) => triggerValue(m.trigger)));
+  const used = new Set(currentProfile().mappings.map((m) => triggerValue(m.trigger)));
   const firstFree = TRIGGERS.find((t) => !used.has(t.value)) || TRIGGERS[0];
   const draft = existing
     ? structuredClone(existing)
@@ -371,7 +409,7 @@ function openEditor(existing) {
   render();
 
   document.getElementById('editorSave').onclick = () => {
-    const conflict = state.mappings.find((m) => m.id !== draft.id && triggerValue(m.trigger) === triggerValue(draft.trigger));
+    const conflict = currentProfile().mappings.find((m) => m.id !== draft.id && triggerValue(m.trigger) === triggerValue(draft.trigger));
     if (conflict) {
       error.textContent = `Já existe um mapeamento para "${triggerLabel(draft.trigger)}". Edite ou remova o existente.`;
       return;
@@ -380,9 +418,10 @@ function openEditor(existing) {
       error.textContent = 'Escolha um aplicativo.';
       return;
     }
-    const index = state.mappings.findIndex((m) => m.id === draft.id);
-    if (index >= 0) state.mappings[index] = draft;
-    else state.mappings.push(draft);
+    const mappings = currentProfile().mappings;
+    const index = mappings.findIndex((m) => m.id === draft.id);
+    if (index >= 0) mappings[index] = draft;
+    else mappings.push(draft);
     editorDialog.close();
     renderMappings();
     scheduleSave();
@@ -434,45 +473,87 @@ function appById(bundleId) {
   return availableApps.find((a) => a.bundleIdentifier === bundleId);
 }
 
-function renderChips() {
-  const chipsEl = document.getElementById('selectedApps');
-  const emptyEl = document.getElementById('appListEmpty');
-  chipsEl.innerHTML = '';
-  if (!state.targetApps) state.targetApps = [];
+function profileItem({ id, name, iconApp, glyph, count, off }) {
+  const item = el('div', 'profile');
+  item.classList.toggle('selected', selectedProfile === id);
+  item.classList.toggle('off', !!off);
 
-  for (const bundleId of state.targetApps) {
-    const app = appById(bundleId) || { name: bundleId, bundleIdentifier: bundleId };
-    const chip = document.createElement('div');
-    chip.className = 'chip';
-    if (app.iconBase64) {
-      const img = document.createElement('img');
-      img.src = iconSrc(app);
-      chip.appendChild(img);
-    }
-    const label = document.createElement('span');
-    label.textContent = app.name;
-    chip.appendChild(label);
-    const removeBtn = document.createElement('button');
-    removeBtn.textContent = '✕';
-    removeBtn.title = 'Remover';
-    removeBtn.addEventListener('click', () => {
-      state.targetApps = state.targetApps.filter((id) => id !== bundleId);
-      scheduleSave();
-      renderChips();
-      renderDropdown(document.getElementById('appSearch').value);
-    });
-    chip.appendChild(removeBtn);
-    chipsEl.appendChild(chip);
+  const main = el('button', 'profile-main');
+  main.type = 'button';
+  if (iconApp && iconApp.iconBase64) {
+    const img = document.createElement('img');
+    img.src = iconSrc(iconApp);
+    main.appendChild(img);
+  } else {
+    main.appendChild(el('span', 'profile-glyph', glyph || '▫︎'));
   }
+  main.appendChild(el('span', 'profile-name', name));
+  main.appendChild(el('span', 'profile-count', count === 1 ? '1 regra' : `${count} regras`));
+  main.onclick = () => selectProfile(id);
+  item.appendChild(main);
+  return item;
+}
 
-  emptyEl.style.display = state.targetApps.length === 0 ? 'block' : 'none';
+function selectProfile(id) {
+  selectedProfile = id;
+  renderProfiles();
+  renderMappings();
+}
+
+function renderProfiles() {
+  const list = document.getElementById('profileList');
+  list.innerHTML = '';
+
+  const global = profileItem({
+    id: 'default', name: 'Global', glyph: '🌐',
+    count: state.defaultProfile.mappings.length, off: !state.defaultProfile.enabled,
+  });
+  const switchLabel = el('label', 'switch');
+  switchLabel.title = 'Ativar o perfil global';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = !!state.defaultProfile.enabled;
+  cb.onchange = () => {
+    state.defaultProfile.enabled = cb.checked;
+    scheduleSave();
+    renderProfiles();
+    renderMappings();
+  };
+  switchLabel.appendChild(cb);
+  switchLabel.appendChild(el('span', 'slider'));
+  global.appendChild(switchLabel);
+  list.appendChild(global);
+
+  for (const bundleId of Object.keys(state.appProfiles)) {
+    const app = appById(bundleId) || { name: bundleId, bundleIdentifier: bundleId };
+    const item = profileItem({
+      id: bundleId, name: app.name, iconApp: app, count: state.appProfiles[bundleId].mappings.length,
+    });
+    const remove = el('button', 'icon-btn', '✕');
+    remove.type = 'button';
+    remove.title = 'Remover perfil';
+    remove.onclick = () => removeProfile(bundleId, app.name);
+    item.appendChild(remove);
+    list.appendChild(item);
+  }
+}
+
+function removeProfile(bundleId, name) {
+  const count = state.appProfiles[bundleId].mappings.length;
+  if (count > 0 && !confirm(`Remover o perfil de ${name} e suas ${count} regras?`)) return;
+  delete state.appProfiles[bundleId];
+  if (selectedProfile === bundleId) selectedProfile = 'default';
+  scheduleSave();
+  renderProfiles();
+  renderMappings();
+  renderDropdown(document.getElementById('appSearch').value);
 }
 
 function renderDropdown(filterText) {
   const dropdown = document.getElementById('appDropdown');
   const query = (filterText || '').toLowerCase();
   const candidates = availableApps.filter(
-    (a) => !state.targetApps.includes(a.bundleIdentifier) && a.name.toLowerCase().includes(query)
+    (a) => !(a.bundleIdentifier in state.appProfiles) && a.name.toLowerCase().includes(query)
   );
 
   dropdown.innerHTML = '';
@@ -492,12 +573,12 @@ function renderDropdown(filterText) {
       item.appendChild(label);
       item.addEventListener('mousedown', (e) => {
         e.preventDefault(); // avoid losing focus before click registers
-        if (!state.targetApps.includes(app.bundleIdentifier)) {
-          state.targetApps.push(app.bundleIdentifier);
-          scheduleSave();
-        }
+        state.appProfiles[app.bundleIdentifier] = { mappings: [] };
+        selectedProfile = app.bundleIdentifier;
+        scheduleSave();
         document.getElementById('appSearch').value = '';
-        renderChips();
+        renderProfiles();
+        renderMappings();
         renderDropdown('');
       });
       dropdown.appendChild(item);
@@ -508,15 +589,14 @@ function renderDropdown(filterText) {
 
 async function renderAppList() {
   availableApps = await window.api.listApps();
-  if (!state.targetApps) state.targetApps = [];
 
-  const missingIds = state.targetApps.filter((id) => !appById(id));
+  const missingIds = Object.keys(state.appProfiles).filter((id) => !appById(id));
   if (missingIds.length > 0) {
     const resolved = await window.api.resolveApps(missingIds);
     availableApps = availableApps.concat(resolved);
   }
 
-  renderChips();
+  renderProfiles();
   renderMappings(); // app names in the list need the app list
 }
 
@@ -562,9 +642,10 @@ suppressScrollInput.addEventListener('change', () => {
 });
 
 document.getElementById('resetBtn').addEventListener('click', () => {
-  const ok = confirm('Restaurar padrões?\n\nRemove todos os mapeamentos e volta a sensibilidade do scroll ao valor original. A lista de apps e a aparência são mantidas.');
+  const ok = confirm('Restaurar padrões?\n\nRemove os mapeamentos de todos os perfis e volta a sensibilidade do scroll ao valor original. Os perfis de apps e a aparência são mantidos.');
   if (!ok) return;
-  state.mappings = [];
+  state.defaultProfile.mappings = [];
+  for (const profile of Object.values(state.appProfiles)) profile.mappings = [];
   state.scrollThreshold = 4;
   state.suppressOriginalScroll = true;
   thresholdInput.value = state.scrollThreshold;

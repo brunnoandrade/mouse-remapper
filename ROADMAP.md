@@ -28,11 +28,12 @@ Legenda: ✅ feito · 🚧 em andamento · ⬜ pendente
 - ✅ Modelo de ação genérico `{ type: 'key' | 'system' | 'app' | 'click', ... }` no lugar de `keyCode + flags`, com migração do config existente
 - ✅ Catálogo de ações de sistema: Mission Control, Spaces, mídia, volume, screenshot (Launchpad fica de fora: removido no macOS 26)
 
-## Fase 3: perfis por app
+## Fase 3: perfis por app ✅
 
-- ⬜ Config no formato `{ default, perApp: { bundleId: mapeamentos } }`
-- ⬜ UI com seletor de app no topo e mapeamentos abaixo (reaproveitando o seletor de apps atual)
-- ⬜ A lista "aplicar apenas nestes aplicativos" passa a ser "apps com perfil próprio"
+- ✅ Config no formato `{ defaultProfile, appProfiles: { bundleId: { mappings } } }`, com migração que preserva o comportamento atual
+- ✅ Lista de perfis na barra lateral (Global + apps); a lista de regras mostra o perfil selecionado
+- ✅ A lista "aplicar apenas nestes aplicativos" virou "apps com perfil próprio"; a regra do app sobrepõe a global só para o mesmo gatilho
+- ✅ Ação "Comportamento original" para um app ignorar uma regra global
 
 ## Fase 4: diferenciais
 

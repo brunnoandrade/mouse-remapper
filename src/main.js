@@ -9,10 +9,10 @@ const CONFIG_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'Mo
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 
 const DEFAULT_CONFIG = {
-  mappings: [],
+  defaultProfile: { enabled: true, mappings: [] },
+  appProfiles: {}, // { [bundleId]: { mappings } }
   scrollThreshold: 4.0,
   suppressOriginalScroll: true,
-  targetApps: [],
   theme: 'system',
 };
 
@@ -36,8 +36,8 @@ const LEGACY_MAPPINGS = {
 
 // Older configs had one fixed field per trigger ({ enabled, keyCode, flags } or { enabled, action });
 // they become entries of the generic `mappings` list. Untouched, disabled defaults are dropped.
-function migrateConfig(cfg) {
-  if (Array.isArray(cfg.mappings)) return cfg;
+function migrateToMappings(cfg) {
+  if (Array.isArray(cfg.mappings) || cfg.defaultProfile) return cfg;
   const mappings = [];
   for (const [key, { trigger, defaultKey }] of Object.entries(LEGACY_MAPPINGS)) {
     const m = cfg[key];
@@ -49,6 +49,27 @@ function migrateConfig(cfg) {
   }
   const { scrollUp, scrollDown, middleClick, sideBack, sideForward, suppressOriginalMiddleClick, ...rest } = cfg;
   return { ...rest, mappings };
+}
+
+// The single `mappings` list + `targetApps` allowlist become profiles. To keep behavior identical, every
+// allowlisted app gets its own copy of the mappings and the default profile starts disabled and empty;
+// with no allowlist the mappings were inactive before, so they land in the (disabled) default profile.
+function migrateToProfiles(cfg) {
+  if (cfg.defaultProfile) return cfg;
+  const { mappings = [], targetApps = [], ...rest } = cfg;
+  const appProfiles = {};
+  for (const bundleId of targetApps) {
+    appProfiles[bundleId] = { mappings: mappings.map((m) => ({ ...structuredClone(m), id: crypto.randomUUID() })) };
+  }
+  return {
+    ...rest,
+    defaultProfile: { enabled: false, mappings: targetApps.length ? [] : mappings },
+    appProfiles,
+  };
+}
+
+function migrateConfig(cfg) {
+  return migrateToProfiles(migrateToMappings(cfg));
 }
 
 function readConfig() {

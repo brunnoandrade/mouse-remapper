@@ -98,14 +98,31 @@ struct Mapping: Codable {
     var action: Action
 }
 
-struct Config: Codable {
+/// A set of mappings. The default profile applies everywhere (when enabled); an app profile only while
+/// that app is frontmost, and wins over the default profile for the triggers it defines.
+struct Profile: Codable {
+    var enabled: Bool?
     var mappings: [Mapping]
+
+    private enum CodingKeys: String, CodingKey { case enabled, mappings }
+}
+
+extension Profile {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled)
+        mappings = try c.decodeIfPresent([Mapping].self, forKey: .mappings) ?? []
+    }
+}
+
+struct Config: Codable {
+    var defaultProfile: Profile
+    var appProfiles: [String: Profile] // keyed by bundle identifier
     var scrollThreshold: Double // accumulated deltaY needed to fire one action
     var suppressOriginalScroll: Bool
-    var targetApps: [String]? // bundle identifiers; remapping only applies while one of these is frontmost
 
     private enum CodingKeys: String, CodingKey {
-        case mappings, scrollThreshold, suppressOriginalScroll, targetApps
+        case defaultProfile, appProfiles, scrollThreshold, suppressOriginalScroll
     }
 }
 
@@ -113,19 +130,30 @@ extension Config {
     // Lenient on purpose: a missing field must never make load() fall back to defaults and overwrite the user's file.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        mappings = try c.decodeIfPresent([Mapping].self, forKey: .mappings) ?? []
+        defaultProfile = try c.decodeIfPresent(Profile.self, forKey: .defaultProfile) ?? Profile(enabled: true, mappings: [])
+        appProfiles = try c.decodeIfPresent([String: Profile].self, forKey: .appProfiles) ?? [:]
         scrollThreshold = try c.decodeIfPresent(Double.self, forKey: .scrollThreshold) ?? 4.0
         suppressOriginalScroll = try c.decodeIfPresent(Bool.self, forKey: .suppressOriginalScroll) ?? true
-        targetApps = try c.decodeIfPresent([String].self, forKey: .targetApps)
     }
 }
 
 let defaultConfig = Config(
-    mappings: [],
+    defaultProfile: Profile(enabled: true, mappings: []),
+    appProfiles: [:],
     scrollThreshold: 4.0,
-    suppressOriginalScroll: true,
-    targetApps: []
+    suppressOriginalScroll: true
 )
+
+/// The mapping that applies to the frontmost app: its own profile first, then the default profile.
+func findMapping(in cfg: Config, matching predicate: (Mapping) -> Bool) -> Mapping? {
+    if let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+       let profile = cfg.appProfiles[front],
+       let mapping = profile.mappings.first(where: { $0.enabled && predicate($0) }) {
+        return mapping
+    }
+    guard cfg.defaultProfile.enabled ?? true else { return nil }
+    return cfg.defaultProfile.mappings.first(where: { $0.enabled && predicate($0) })
+}
 
 let configURL: URL = {
     let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -301,23 +329,15 @@ func eventTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
 
     let cfg = store.config
 
-    // Not global: only remap while one of the selected apps is frontmost.
-    let targets = cfg.targetApps ?? []
-    guard !targets.isEmpty,
-          let frontBundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
-          targets.contains(frontBundleId) else {
-        return Unmanaged.passUnretained(event)
-    }
-
     switch type {
     case .scrollWheel:
         let deltaY = event.getDoubleValueField(.scrollWheelEventDeltaAxis1)
         if deltaY == 0 { return Unmanaged.passUnretained(event) }
 
         let direction = deltaY > 0 ? "up" : "down"
-        guard let mapping = cfg.mappings.first(where: {
-            $0.enabled && $0.trigger.type == "scroll" && $0.trigger.direction == direction
-        }) else { return Unmanaged.passUnretained(event) }
+        guard let mapping = findMapping(in: cfg, matching: {
+            $0.trigger.type == "scroll" && $0.trigger.direction == direction
+        }), mapping.action.type != "none" else { return Unmanaged.passUnretained(event) }
 
         scrollAccumulator += abs(deltaY)
         if scrollAccumulator >= cfg.scrollThreshold {
@@ -329,9 +349,9 @@ func eventTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
 
     case .otherMouseDown, .otherMouseUp:
         let button = Int(event.getIntegerValueField(.mouseEventButtonNumber))
-        guard let mapping = cfg.mappings.first(where: {
-            $0.enabled && $0.trigger.type == "button" && $0.trigger.button == button
-        }) else { return Unmanaged.passUnretained(event) }
+        guard let mapping = findMapping(in: cfg, matching: {
+            $0.trigger.type == "button" && $0.trigger.button == button
+        }), mapping.action.type != "none" else { return Unmanaged.passUnretained(event) }
 
         if type == .otherMouseDown {
             perform(mapping.action, at: event.location)
