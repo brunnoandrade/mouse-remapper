@@ -42,6 +42,25 @@ Legenda: ✅ feito · 🚧 em andamento · ⬜ pendente
 - ✅ Suavização do scroll (a roda vira uma animação ease-out a 120 Hz; distância conservada, inverter/velocidade/aceleração continuam valendo). Falta só afinar a sensação no seu mouse
 - ✅ Exportar e importar configuração (o arquivo importado é validado; a aparência não é importada)
 
+## Windows
+
+O app Electron já é multiplataforma; o que muda é o helper nativo (no macOS, Swift + event tap; no Windows, Go + hook `WH_MOUSE_LL` + `SendInput`). Ele fica em `native/windows/` e lê o mesmo `config.json`.
+
+- ✅ Helper em Go com a lógica portável testada no Mac (host falso): perfis, gestos, scroll (ajustes e suavização), mapa de teclas macOS→Windows (checado contra a lista de teclas da interface), planejamento de ações, armazenamento da config com as mesmas garantias do macOS
+- ✅ Camada Win32 fina (hook, `SendInput`, app em foco, listar apps) compilando para amd64 e arm64
+- ✅ Electron por plataforma (`src/platform.js`): pasta da config (`%AppData%`), nome/local do helper, ícone de bandeja, menu, item de login (argumento `--hidden`), sem card de permissão, ícones dos apps via `app.getFileIcon`
+- ✅ Interface por plataforma: modificadores Ctrl/Alt/Shift/Win, catálogo de ações do Windows (Visão de tarefas, áreas de trabalho virtuais, Win+Shift+S), sem botões extras 5+
+- ✅ Testes que rodam num runner Windows (`.github/workflows/windows-helper.yml`): existência de cada API do Win32, layout das estruturas de `SendInput`, e o hook real com eventos injetados
+- ⬜ **Validar num Windows de verdade**: rodar esse workflow (precisa de push) e testar com um mouse
+- ⬜ Empacotamento e assinatura para Windows (junto com a Fase 5)
+
+Limitações conhecidas no Windows:
+- Apps abertos como administrador não recebem os remapeamentos, a menos que o Mouse Remapper também rode como administrador (limite do hook)
+- Touchpads de precisão e mouses de alta resolução (deltas menores que uma "trava" da roda) não têm o scroll alterado
+- A roda só é ajustada em múltiplos de 120; botões extras além dos dois laterais não existem no hook padrão
+- O nome do app na lista é o do executável (ex.: "Chrome"), e o perfil é identificado pelo nome do `.exe`
+- O ⌘ da configuração vira a tecla Windows; configs exportadas do Mac usam teclas de atalho do Mac
+
 ## Fase 5: distribuição
 
 - ⬜ Assinatura (Developer ID) e notarização

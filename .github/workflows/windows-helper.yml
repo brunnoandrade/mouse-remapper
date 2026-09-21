@@ -1,0 +1,71 @@
+name: Windows helper
+
+# The Windows helper (native/windows, written in Go) cannot be run on a Mac, so this workflow is what actually
+# executes its Win32 layer: hook installation, SendInput and the struct layouts.
+
+on:
+  push:
+    paths: ['native/windows/**', 'src/settings.js', 'src/config.js', '.github/workflows/windows-helper.yml']
+  pull_request:
+    paths: ['native/windows/**', 'src/settings.js', 'src/config.js', '.github/workflows/windows-helper.yml']
+  workflow_dispatch:
+
+jobs:
+  portable:
+    name: Portable logic (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: native/windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/windows/go.mod
+          cache-dependency-path: native/windows/go.sum
+      - run: go vet ./...
+      - run: go test ./... -count=1
+      - name: Cross-compile for Windows (amd64 and arm64)
+        run: |
+          GOOS=windows GOARCH=amd64 go vet ./...
+          GOOS=windows GOARCH=arm64 go vet ./...
+
+  windows:
+    name: Win32 layer (windows-latest)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: native/windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/windows/go.mod
+          cache-dependency-path: native/windows/go.sum
+      - name: Tests (portable logic + Win32 exports, struct layout and the real mouse hook)
+        run: go test ./... -v -count=1 -timeout 5m
+      - name: Build
+        run: |
+          go build -trimpath -ldflags "-s -w" -o MouseRemapHelper.exe .
+          $env:GOARCH = "arm64"
+          go build -trimpath -ldflags "-s -w" -o MouseRemapHelper-arm64.exe .
+      - name: Helper answers the command-line modes
+        shell: pwsh
+        run: |
+          $out = ./MouseRemapHelper.exe --check-permission
+          if ($out.Trim() -ne "true") { throw "--check-permission printed '$out'" }
+          $apps = ./MouseRemapHelper.exe --list-apps
+          Write-Host "--list-apps: $apps"
+          $null = $apps | ConvertFrom-Json
+          $r = ./MouseRemapHelper.exe --resolve-apps=notepad.exe
+          Write-Host "--resolve-apps: $r"
+          $null = $r | ConvertFrom-Json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MouseRemapHelper-windows
+          path: |
+            native/windows/MouseRemapHelper.exe
+            native/windows/MouseRemapHelper-arm64.exe

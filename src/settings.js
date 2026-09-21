@@ -1,3 +1,7 @@
+// The config stores keys as macOS virtual key codes and modifiers as macOS flag bits on every platform; the
+// helper for each OS translates them. What the user sees (labels, which actions exist) depends on the platform.
+const IS_MAC = window.api.platform === 'darwin';
+
 // KeyboardEvent.code -> macOS virtual keycode (kVK_*)
 const CODE_TO_MAC = {
   KeyA: 0x00, KeyS: 0x01, KeyD: 0x02, KeyF: 0x03, KeyH: 0x04, KeyG: 0x05,
@@ -24,7 +28,7 @@ function labelForCode(code) {
   const specials = {
     ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→',
     Space: 'Espaço', Enter: 'Enter', Tab: 'Tab', Escape: 'Esc',
-    Backspace: 'Delete', PageUp: 'Page Up', PageDown: 'Page Down',
+    Backspace: IS_MAC ? 'Delete' : 'Backspace', PageUp: 'Page Up', PageDown: 'Page Down',
     Home: 'Home', End: 'End',
   };
   if (specials[code]) return specials[code];
@@ -36,7 +40,7 @@ function labelForCode(code) {
 const FLAG = { shift: 0x20000, control: 0x40000, option: 0x80000, command: 0x100000 };
 
 // Trigger `button` numbers are CGEvent button numbers: 2 = middle, 3 = back, 4 = forward, 5+ = extras.
-const TRIGGERS = [
+const ALL_TRIGGERS = [
   { value: 'scroll:up', label: 'Scroll para cima', trigger: { type: 'scroll', direction: 'up' }, defaultKey: 126 },
   { value: 'scroll:down', label: 'Scroll para baixo', trigger: { type: 'scroll', direction: 'down' }, defaultKey: 125 },
   { value: 'button:2', label: 'Clique do meio', trigger: { type: 'button', button: 2 }, defaultKey: 49 },
@@ -44,6 +48,9 @@ const TRIGGERS = [
   { value: 'button:4', label: 'Botão lateral (avançar)', trigger: { type: 'button', button: 4 }, defaultKey: 124 },
   ...[5, 6, 7, 8].map((n) => ({ value: `button:${n}`, label: `Botão extra ${n}`, trigger: { type: 'button', button: n }, defaultKey: 49 })),
 ];
+
+// Standard Windows mice have at most a middle button and two side buttons that the hook can see.
+const TRIGGERS = IS_MAC ? ALL_TRIGGERS : ALL_TRIGGERS.filter((t) => !(t.trigger.type === 'button' && t.trigger.button >= 5));
 
 const DIRECTIONS = [
   ['left', '← Esquerda', 123],
@@ -82,8 +89,8 @@ function defaultKeyFor(t) {
   return known ? known.defaultKey : 49;
 }
 
-// Ids must match performSystem() in native/MouseRemapHelper.swift.
-const ACTION_GROUPS = [
+// Ids must match performSystem() in native/MouseRemapHelper.swift and planSystem() in native/windows/plan.go.
+const MAC_ACTION_GROUPS = [
   { label: 'Sistema', items: [
     ['system:mission_control', 'Mission Control'],
     ['system:space_left', 'Space à esquerda'],
@@ -94,6 +101,19 @@ const ACTION_GROUPS = [
     ['system:screenshot_area', 'Área selecionada'],
     ['system:screenshot_menu', 'Menu de captura'],
   ] },
+];
+const WIN_ACTION_GROUPS = [
+  { label: 'Sistema', items: [
+    ['system:mission_control', 'Visão de tarefas (Win+Tab)'],
+    ['system:space_left', 'Área de trabalho virtual à esquerda'],
+    ['system:space_right', 'Área de trabalho virtual à direita'],
+  ] },
+  { label: 'Captura de tela', items: [
+    ['system:screenshot_full', 'Tela inteira (salva em Imagens)'],
+    ['system:screenshot_area', 'Recorte de tela (Win+Shift+S)'],
+  ] },
+];
+const COMMON_ACTION_GROUPS = [
   { label: 'Mídia', items: [
     ['system:play_pause', 'Play / Pause'],
     ['system:next_track', 'Próxima faixa'],
@@ -108,8 +128,12 @@ const ACTION_GROUPS = [
     ['click:double', 'Duplo clique'],
   ] },
 ];
+const ACTION_GROUPS = [...(IS_MAC ? MAC_ACTION_GROUPS : WIN_ACTION_GROUPS), ...COMMON_ACTION_GROUPS];
 
-const ACTION_LABELS = Object.fromEntries(ACTION_GROUPS.flatMap((g) => g.items));
+// Labels also cover actions from the other platform, so a config imported from there still reads sensibly.
+const ACTION_LABELS = Object.fromEntries(
+  [...MAC_ACTION_GROUPS, ...WIN_ACTION_GROUPS, ...COMMON_ACTION_GROUPS, ...ACTION_GROUPS].flatMap((g) => g.items)
+);
 
 let state = null;
 let selectedProfile = 'default'; // 'default' or a bundle id
@@ -144,9 +168,21 @@ function actionFromValue(value, trigger, previous) {
   return { type, id };
 }
 
+// macOS: ⌘ ⌥ ⌃ ⇧. Windows: the same four bits are the Win key, Alt, Ctrl and Shift.
+const MODIFIER_NAMES = IS_MAC
+  ? [['command', '⌘'], ['option', '⌥'], ['control', '⌃'], ['shift', '⇧']]
+  : [['control', 'Ctrl'], ['option', 'Alt'], ['shift', 'Shift'], ['command', 'Win']];
+
+function modifierLabel(flags) {
+  if (IS_MAC) { // conventional macOS order: ⌃ ⌥ ⇧ ⌘
+    return [['control', '⌃'], ['option', '⌥'], ['shift', '⇧'], ['command', '⌘']].filter(([n]) => flags & FLAG[n]).map(([, g]) => g).join('');
+  }
+  return MODIFIER_NAMES.filter(([n]) => flags & FLAG[n]).map(([, g]) => `${g}+`).join('');
+}
+
 function buildModifiersUI(container, action) {
   container.innerHTML = '';
-  const names = [['command', '⌘'], ['option', '⌥'], ['control', '⌃'], ['shift', '⇧']];
+  const names = MODIFIER_NAMES;
   for (const [key, glyph] of names) {
     const label = document.createElement('label');
     const cb = document.createElement('input');
@@ -185,7 +221,14 @@ function buildActionSelect(current) {
     for (const [value, label] of group.items) add(og, value, label);
     select.appendChild(og);
   }
-  select.value = actionValue(current);
+  const currentValue = actionValue(current);
+  if (![...select.options].some((o) => o.value === currentValue)) {
+    const opt = document.createElement('option');
+    opt.value = currentValue;
+    opt.textContent = ACTION_LABELS[currentValue] || currentValue;
+    select.appendChild(opt);
+  }
+  select.value = currentValue;
   return select;
 }
 
@@ -231,16 +274,19 @@ function buildAppRow(action) {
     select.appendChild(opt);
   }
   select.value = action.bundleId || '';
-  select.onchange = () => { action.bundleId = select.value; };
+  select.onchange = () => {
+    action.bundleId = select.value;
+    const chosen = appById(select.value);
+    if (chosen && chosen.path) action.path = chosen.path;
+    else delete action.path;
+  };
   row.appendChild(select);
   return row;
 }
 
 function actionLabel(action) {
   if (action.type === 'key') {
-    const glyphs = [['control', '⌃'], ['option', '⌥'], ['shift', '⇧'], ['command', '⌘']]
-      .filter(([name]) => action.flags & FLAG[name]).map(([, g]) => g).join('');
-    return glyphs + (MAC_TO_LABEL[action.keyCode] || `código ${action.keyCode}`);
+    return modifierLabel(action.flags) + (MAC_TO_LABEL[action.keyCode] || `código ${action.keyCode}`);
   }
   if (action.type === 'none') return 'Original (sem remapear)';
   if (action.type === 'app') {
@@ -457,7 +503,9 @@ function openEditor(existing) {
       dirRow.appendChild(dirSelect);
       form.appendChild(dirRow);
 
-      form.appendChild(el('p', 'small hint', 'Segure o botão e arraste. Um clique simples nesse botão passa a disparar ao soltar, e o cursor fica parado durante o gesto.'));
+      form.appendChild(el('p', 'small hint', IS_MAC
+        ? 'Segure o botão e arraste. Um clique simples nesse botão passa a disparar ao soltar, e o cursor fica parado durante o gesto.'
+        : 'Segure o botão e arraste. Um clique simples nesse botão passa a disparar ao soltar, e o cursor volta ao ponto inicial quando o gesto dispara.'));
     }
 
     const actionRow = el('div', 'row field');
@@ -732,8 +780,15 @@ document.getElementById('resetBtn').addEventListener('click', () => {
 function renderPermission(granted) {
   const card = document.getElementById('perm-card');
   card.classList.toggle('granted', granted);
-  document.getElementById('permTitle').textContent = granted ? '✓ Acessibilidade concedida' : 'Permissão de Acessibilidade';
   const text = document.getElementById('permText');
+  if (!IS_MAC) { // Windows has no permission to grant; there is only one limit worth knowing about
+    document.getElementById('permTitle').textContent = '✓ Sem permissões extras';
+    text.textContent = 'O Windows não pede permissão. Apps abertos como administrador não recebem os remapeamentos, a menos que o Mouse Remapper também seja executado como administrador.';
+    text.className = 'small';
+    document.getElementById('permBtn').hidden = true;
+    return;
+  }
+  document.getElementById('permTitle').textContent = granted ? '✓ Acessibilidade concedida' : 'Permissão de Acessibilidade';
   text.textContent = granted
     ? 'O remapeamento está pronto para funcionar.'
     : 'Necessária para interceptar eventos do mouse. Sem ela, nenhum mapeamento funciona. O app detecta a permissão sozinho assim que você a conceder.';

@@ -93,7 +93,10 @@ function sanitizeAction(a) {
     case 'click':
       return CLICK_ACTIONS.includes(a.id) ? { type: 'click', id: a.id } : null;
     case 'app':
-      return typeof a.bundleId === 'string' && a.bundleId.length <= 256 ? { type: 'app', bundleId: a.bundleId } : null;
+      if (typeof a.bundleId !== 'string' || a.bundleId.length > 256) return null;
+      return typeof a.path === 'string' && a.path.length > 0 && a.path.length <= 1024
+        ? { type: 'app', bundleId: a.bundleId, path: a.path }
+        : { type: 'app', bundleId: a.bundleId };
     case 'none':
       return { type: 'none' };
     default:

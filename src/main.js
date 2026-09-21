@@ -1,12 +1,20 @@
 const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, nativeImage, nativeTheme, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
 const { spawn } = require('child_process');
 const { DEFAULT_CONFIG, THEMES, migrateConfig, sanitizeConfig } = require('./config');
+const platform = require('./platform');
 
-const CONFIG_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'MouseRemapper');
+const CONFIG_DIR = platform.configDir();
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
+
+// macOS reports whether the app was started by its login item; on Windows the login item is registered with an
+// extra argument instead, and its presence is the signal.
+const LOGIN_ARGS = ['--hidden'];
+const loginQuery = () => (process.platform === 'win32' ? { args: LOGIN_ARGS } : {});
+const openedAtLogin = () => (process.platform === 'win32'
+  ? process.argv.includes(LOGIN_ARGS[0])
+  : app.getLoginItemSettings().wasOpenedAtLogin);
 
 function ensureConfig() {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
@@ -31,10 +39,22 @@ function writeConfig(cfg) {
 }
 
 function helperBinaryPath() {
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'MouseRemapHelper');
-  }
-  return path.join(__dirname, '..', 'native', 'MouseRemapHelper');
+  return platform.helperPath({
+    packaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    projectRoot: path.join(__dirname, '..'),
+  });
+}
+
+// Runs the helper with arguments and returns what it printed ('' on any failure).
+function runHelper(args) {
+  return new Promise((resolve) => {
+    const child = spawn(helperBinaryPath(), args, platform.spawnOptions(process.platform, ['ignore', 'pipe', 'ignore']));
+    let out = '';
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.on('close', () => resolve(out));
+    child.on('error', () => resolve(''));
+  });
 }
 
 let helperProcess = null;
@@ -44,7 +64,7 @@ let settingsWindow = null;
 function startHelper() {
   if (helperProcess) return;
   const bin = helperBinaryPath();
-  helperProcess = spawn(bin, [], { stdio: ['ignore', 'pipe', 'pipe'] });
+  helperProcess = spawn(bin, [], platform.spawnOptions(process.platform, ['ignore', 'pipe', 'pipe']));
   helperProcess.stdout.on('data', (d) => console.log(`[helper] ${d}`));
   helperProcess.stderr.on('data', (d) => console.log(`[helper] ${d}`));
   helperProcess.on('error', (err) => {
@@ -57,15 +77,10 @@ function startHelper() {
   });
 }
 
-// Whether the helper binary (the process that taps mouse events) has Accessibility access.
-function checkAccessibility() {
-  return new Promise((resolve) => {
-    const child = spawn(helperBinaryPath(), ['--check-permission'], { stdio: ['ignore', 'pipe', 'ignore'] });
-    let out = '';
-    child.stdout.on('data', (d) => { out += d.toString(); });
-    child.on('close', () => resolve(out.trim() === 'true'));
-    child.on('error', () => resolve(false));
-  });
+// Whether the helper binary (the process that taps mouse events) may do so. Only macOS has such a permission.
+async function checkAccessibility() {
+  if (!platform.needsAccessibilityPermission()) return true;
+  return (await runHelper(['--check-permission'])).trim() === 'true';
 }
 
 // Without the permission the helper exits right away; retry once it has been granted.
@@ -95,6 +110,8 @@ function createSettingsWindow() {
     minWidth: 820,
     minHeight: 560,
     title: 'Mouse Remapper',
+    autoHideMenuBar: true, // Windows only: no File/Edit/View bar over a settings window
+    ...(process.platform !== 'darwin' && { icon: path.join(__dirname, '..', 'build', 'icon.png') }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -108,8 +125,9 @@ function createSettingsWindow() {
 }
 
 function createTray() {
-  const icon = nativeImage.createFromPath(path.join(__dirname, 'assets', 'trayTemplate.png'));
-  icon.setTemplateImage(true);
+  const { file, template } = platform.trayIcon();
+  const icon = nativeImage.createFromPath(path.join(__dirname, 'assets', file));
+  if (template) icon.setTemplateImage(true);
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
   tray.setToolTip('Mouse Remapper');
   const menu = Menu.buildFromTemplate([
@@ -122,6 +140,7 @@ function createTray() {
 }
 
 app.whenReady().then(() => {
+  if (process.platform !== 'darwin') Menu.setApplicationMenu(null); // the default menu is macOS-shaped
   ensureConfig();
   writeConfig(readConfig()); // persist the migrated shape before the helper starts
   const { theme } = readConfig();
@@ -130,7 +149,7 @@ app.whenReady().then(() => {
   startHelper();
   watchHelper();
   // Launched by the login item: stay in the tray instead of popping up the window.
-  if (!app.getLoginItemSettings().wasOpenedAtLogin) createSettingsWindow();
+  if (!openedAtLogin()) createSettingsWindow();
 });
 
 app.on('window-all-closed', (e) => {
@@ -198,48 +217,79 @@ ipcMain.handle('permission:status', () => checkAccessibility());
 // Registering the dev Electron binary as a login item would be wrong, so only the packaged app can.
 ipcMain.handle('login:get', () => ({
   supported: app.isPackaged,
-  enabled: app.isPackaged && app.getLoginItemSettings().openAtLogin,
+  enabled: app.isPackaged && app.getLoginItemSettings(loginQuery()).openAtLogin,
 }));
 ipcMain.handle('login:set', (_evt, enabled) => {
   if (!app.isPackaged) return false;
-  app.setLoginItemSettings({ openAtLogin: !!enabled });
+  app.setLoginItemSettings({ openAtLogin: !!enabled, ...loginQuery() });
   return true;
 });
 ipcMain.handle('prefs:accessibility', () => {
+  if (!platform.needsAccessibilityPermission()) return;
   shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
 });
 
-ipcMain.handle('apps:list', () => {
-  return new Promise((resolve) => {
-    const bin = helperBinaryPath();
-    const child = spawn(bin, ['--list-apps'], { stdio: ['ignore', 'pipe', 'ignore'] });
-    let out = '';
-    child.stdout.on('data', (d) => { out += d.toString(); });
-    child.on('close', () => {
-      try {
-        resolve(JSON.parse(out));
-      } catch {
-        resolve([]);
-      }
-    });
-    child.on('error', () => resolve([]));
-  });
+// The Windows helper only reports where an app's executable is; the icon comes from Electron.
+async function withIcons(apps) {
+  if (process.platform !== 'win32') return apps;
+  return Promise.all(apps.map(async (a) => {
+    if (!a.path || a.iconBase64) return a;
+    try {
+      const image = await app.getFileIcon(a.path, { size: 'normal' });
+      return { ...a, iconBase64: image.toPNG().toString('base64') };
+    } catch {
+      return a;
+    }
+  }));
+}
+
+// Paths of apps seen while running, so a profile for an app that is closed still gets its icon and name.
+const APP_CACHE_PATH = path.join(CONFIG_DIR, 'apps.json');
+
+function readAppCache() {
+  try {
+    return JSON.parse(fs.readFileSync(APP_CACHE_PATH, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function rememberApps(apps) {
+  const cache = readAppCache();
+  let changed = false;
+  for (const a of apps) {
+    if (a.path && cache[a.bundleIdentifier] !== a.path) {
+      cache[a.bundleIdentifier] = a.path;
+      changed = true;
+    }
+  }
+  if (changed) {
+    try {
+      fs.writeFileSync(APP_CACHE_PATH, JSON.stringify(cache, null, 2));
+    } catch { /* a cache that cannot be written only costs some icons */ }
+  }
+}
+
+function parseApps(out) {
+  try {
+    return JSON.parse(out);
+  } catch {
+    return [];
+  }
+}
+
+ipcMain.handle('apps:list', async () => {
+  const apps = parseApps(await runHelper(['--list-apps']));
+  if (process.platform === 'win32') rememberApps(apps);
+  return withIcons(apps);
 });
 
-ipcMain.handle('apps:resolve', (_evt, bundleIds) => {
-  return new Promise((resolve) => {
-    if (!bundleIds || bundleIds.length === 0) return resolve([]);
-    const bin = helperBinaryPath();
-    const child = spawn(bin, [`--resolve-apps=${bundleIds.join(',')}`], { stdio: ['ignore', 'pipe', 'ignore'] });
-    let out = '';
-    child.stdout.on('data', (d) => { out += d.toString(); });
-    child.on('close', () => {
-      try {
-        resolve(JSON.parse(out));
-      } catch {
-        resolve([]);
-      }
-    });
-    child.on('error', () => resolve([]));
-  });
+ipcMain.handle('apps:resolve', async (_evt, bundleIds) => {
+  if (!bundleIds || bundleIds.length === 0) return [];
+  const apps = parseApps(await runHelper([`--resolve-apps=${bundleIds.join(',')}`]));
+  if (process.platform === 'win32') {
+    const cache = readAppCache();
+    for (const a of apps) if (!a.path && cache[a.bundleIdentifier]) a.path = cache[a.bundleIdentifier];
+  }
+  return withIcons(apps);
 });
