@@ -72,7 +72,8 @@ jobs:
           # Job logs need a token to read through the API; annotations do not.
           pass=$(grep -c -- '^--- PASS\|^    --- PASS' test.log || true); fail=$(grep -c -- '^--- FAIL\|^    --- FAIL' test.log || true); skip=$(grep -c -- '^--- SKIP\|^    --- SKIP' test.log || true)
           echo "::notice title=go test (windows)::pass=$pass fail=$fail skip=$skip"
-          grep -E -- '--- (PASS|FAIL|SKIP)' test.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | { read -r all; echo "::notice title=go test detail (windows)::$all"; }
+          detail=$(grep -E -- '--- (PASS|FAIL|SKIP)' test.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::notice title=go test detail (windows)::$detail"
           if [ "$fail" != "0" ]; then
             msg=$(grep -E -- '^(--- FAIL|FAIL|panic)|_test\.go:[0-9]+:' test.log | head -30 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
             echo "::error title=go test failures (windows)::$msg"
