@@ -27,11 +27,26 @@ jobs:
           go-version-file: native/windows/go.mod
           cache-dependency-path: native/windows/go.sum
       - run: go vet ./...
-      - run: go test ./... -count=1
+      - name: Tests
+        shell: bash
+        run: |
+          set -o pipefail
+          go test ./... -v -count=1 2>&1 | tee test.log
       - name: Cross-compile for Windows (amd64 and arm64)
         run: |
           GOOS=windows GOARCH=amd64 go vet ./...
           GOOS=windows GOARCH=arm64 go vet ./...
+      - name: Report
+        if: always()
+        shell: bash
+        run: |
+          # Job logs need a token to read through the API; annotations do not.
+          pass=$(grep -c -- '^--- PASS' test.log || true); fail=$(grep -c -- '^--- FAIL' test.log || true); skip=$(grep -c -- '^--- SKIP' test.log || true)
+          echo "::notice title=go test (${{ matrix.os }})::pass=$pass fail=$fail skip=$skip"
+          if [ "$fail" != "0" ]; then
+            msg=$(grep -E -- '^(--- FAIL|FAIL|panic)|_test\.go:[0-9]+:' test.log | head -30 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=go test failures (${{ matrix.os }})::$msg"
+          fi
 
   windows:
     name: Win32 layer (windows-latest)
@@ -46,7 +61,22 @@ jobs:
           go-version-file: native/windows/go.mod
           cache-dependency-path: native/windows/go.sum
       - name: Tests (portable logic + Win32 exports, struct layout and the real mouse hook)
-        run: go test ./... -v -count=1 -timeout 5m
+        shell: bash
+        run: |
+          set -o pipefail
+          go test ./... -v -count=1 -timeout 5m 2>&1 | tee test.log
+      - name: Report
+        if: always()
+        shell: bash
+        run: |
+          # Job logs need a token to read through the API; annotations do not.
+          pass=$(grep -c -- '^--- PASS\|^    --- PASS' test.log || true); fail=$(grep -c -- '^--- FAIL\|^    --- FAIL' test.log || true); skip=$(grep -c -- '^--- SKIP\|^    --- SKIP' test.log || true)
+          echo "::notice title=go test (windows)::pass=$pass fail=$fail skip=$skip"
+          grep -E -- '--- (PASS|FAIL|SKIP)' test.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | { read -r all; echo "::notice title=go test detail (windows)::$all"; }
+          if [ "$fail" != "0" ]; then
+            msg=$(grep -E -- '^(--- FAIL|FAIL|panic)|_test\.go:[0-9]+:' test.log | head -30 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=go test failures (windows)::$msg"
+          fi
       - name: Build
         run: |
           go build -trimpath -ldflags "-s -w" -o MouseRemapHelper.exe .
