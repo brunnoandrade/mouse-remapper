@@ -1,0 +1,109 @@
+name: Package
+
+# Builds the installable app on macOS and Windows and tests the result: the package holds what the app needs,
+# and the app really starts from it (on Windows it is installed silently first).
+# Builds are unsigned here (no certificates in CI).
+
+on:
+  push:
+    branches: [packaging]
+    tags: ['v*']
+    paths: ['package.json', 'package-lock.json', 'src/**', 'native/**', 'build/**', 'scripts/**', '.github/workflows/package.yml']
+  workflow_dispatch:
+
+jobs:
+  package:
+    name: Package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      SKIP_SIGNATURE_CHECK: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-go@v5
+        if: runner.os == 'Windows'
+        with:
+          go-version-file: native/windows/go.mod
+          cache-dependency-path: native/windows/go.sum
+      - run: npm ci
+      - run: npm test
+      - name: Build (helper + app)
+        run: npm run dist
+      - name: Verify the package contents
+        run: npm run verify-package
+
+      - name: Smoke test the packaged app (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP="$(ls -d dist/mac*/*.app | head -1)"
+          echo "app: $APP"
+          HELPER="$APP/Contents/Resources/MouseRemapHelper"
+          perm="$("$HELPER" --check-permission)"; echo "--check-permission -> $perm"
+          [[ "$perm" == "true" || "$perm" == "false" ]] || { echo "::error::unexpected --check-permission output"; exit 1; }
+          "$HELPER" --list-apps | python3 -c "import json,sys; d=json.load(sys.stdin); print('--list-apps ->', len(d), 'apps')"
+          export HOME="$RUNNER_TEMP/home"; mkdir -p "$HOME"
+          MOUSE_REMAP_DRY_RUN=1 "$APP/Contents/MacOS/Mouse Remapper" > app.log 2>&1 &
+          APP_PID=$!
+          sleep 12
+          CFG="$HOME/Library/Application Support/MouseRemapper/config.json"
+          kill $APP_PID 2>/dev/null || true
+          cat app.log | head -20
+          [[ -s "$CFG" ]] || { echo "::error::the packaged app did not create its config"; exit 1; }
+          echo "config created by the packaged app:"; head -c 300 "$CFG"; echo
+
+      - name: Install and smoke test the packaged app (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem dist -Filter *.exe | Where-Object { $_.Name -like 'MouseRemapper-*' } | Select-Object -First 1
+          Write-Host "installer: $($installer.Name) ($([math]::Round($installer.Length/1MB,1)) MB)"
+          $target = Join-Path $env:RUNNER_TEMP 'installed'
+          $p = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$target" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installer exited with $($p.ExitCode)" }
+          Get-ChildItem $target | Select-Object -First 12 | ForEach-Object { Write-Host "  $($_.Name)" }
+          foreach ($f in 'Mouse Remapper.exe', 'resources\MouseRemapHelper.exe', 'resources\app.asar') {
+            if (-not (Test-Path (Join-Path $target $f))) { throw "missing after install: $f" }
+          }
+          Write-Host "installed files are all there"
+
+          $helper = Join-Path $target 'resources\MouseRemapHelper.exe'
+          $perm = (& $helper --check-permission).Trim(); Write-Host "--check-permission -> $perm"
+          if ($perm -ne 'true') { throw "--check-permission printed '$perm'" }
+
+          # run the INSTALLED app with an isolated config folder
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'appdata'
+          New-Item -ItemType Directory -Force $env:APPDATA | Out-Null
+          $env:MOUSE_REMAP_DRY_RUN = '1'
+          $app = Start-Process -FilePath (Join-Path $target 'Mouse Remapper.exe') -PassThru
+          Start-Sleep -Seconds 15
+          $cfg = Join-Path $env:APPDATA 'MouseRemapper\config.json'
+          $running = Get-Process -Name 'MouseRemapHelper' -ErrorAction SilentlyContinue
+          Write-Host "app running: $(-not $app.HasExited) | helper running: $([bool]$running) | config created: $(Test-Path $cfg)"
+          Get-Process -Name 'Mouse Remapper', 'MouseRemapHelper' -ErrorAction SilentlyContinue | Stop-Process -Force
+          if (-not (Test-Path $cfg)) { throw 'the installed app did not create its config' }
+          if (-not $running) { throw 'the installed app did not start its helper' }
+          Get-Content $cfg -TotalCount 12
+
+          # uninstall
+          $unins = Get-ChildItem $target -Filter 'Uninstall*.exe' | Select-Object -First 1
+          Start-Process -FilePath $unins.FullName -ArgumentList '/S' -Wait
+          Start-Sleep -Seconds 3
+          Write-Host "after uninstall, install folder still exists: $(Test-Path (Join-Path $target 'Mouse Remapper.exe'))"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MouseRemapper-${{ runner.os }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/MouseRemapper-*.exe
+          if-no-files-found: error
