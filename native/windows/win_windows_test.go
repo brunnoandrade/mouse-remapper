@@ -104,7 +104,10 @@ type lockedHost struct {
 
 func (h *lockedHost) Log(l string)       { h.mu.Lock(); h.fakeHost.Log(l); h.mu.Unlock() }
 func (h *lockedHost) SetCursor(x, y int) { h.mu.Lock(); h.fakeHost.SetCursor(x, y); h.mu.Unlock() }
-func (h *lockedHost) Send(in []Input)    { sendRecords(toRecords(in, selfMarker)) } // really inject
+func (h *lockedHost) Send(in []Input) { // really inject, the way the real host does
+	records := toRecords(in, selfMarker)
+	runAsync(func() { sendRecords(records) })
+}
 func (h *lockedHost) snapshot() (logs []string, cursorCalls int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

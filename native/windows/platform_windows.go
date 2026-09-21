@@ -287,9 +287,34 @@ type winHost struct {
 
 func newHost() Host { return &winHost{pidNames: map[uint32]string{}} }
 
-func (h *winHost) Send(inputs []Input) { sendRecords(toRecords(inputs, selfMarker)) }
+// Everything that calls into the system on behalf of the hook is handed to a worker goroutine. SendInput made
+// from inside a low-level hook callback is not delivered reliably (the CI run on Windows showed the injected wheel
+// event never arriving), and the callback must return quickly anyway.
+var asyncWork = make(chan func(), 512)
+var asyncOnce sync.Once
 
-func (h *winHost) SetCursor(x, y int) { procSetCursorPos.Call(uintptr(x), uintptr(y)) }
+func runAsync(f func()) {
+	asyncOnce.Do(func() {
+		go func() {
+			for job := range asyncWork {
+				job()
+			}
+		}()
+	})
+	select {
+	case asyncWork <- f:
+	default: // queue full: dropping is better than blocking the hook
+	}
+}
+
+func (h *winHost) Send(inputs []Input) {
+	records := toRecords(inputs, selfMarker)
+	runAsync(func() { sendRecords(records) })
+}
+
+func (h *winHost) SetCursor(x, y int) {
+	runAsync(func() { procSetCursorPos.Call(uintptr(x), uintptr(y)) })
+}
 
 func (h *winHost) Log(line string) { fmt.Println(line) }
 

@@ -164,3 +164,20 @@ func TestStoreGivesUpOnAPermanentlyBrokenFileUntilItChanges(t *testing.T) {
 	settle(t, s)
 	expect(t, "recovers when the file changes again", hasButton(s.Config(), 8), true)
 }
+
+// On Windows the modification time is coarse: a rewrite that keeps the size can carry the very same timestamp.
+// The store must still notice it, so it compares content.
+func TestStoreNoticesARewriteWithTheSameSizeAndModificationTime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	stamp := time.Now().Add(-time.Hour)
+	write(t, path, cfgWith(9))
+	os.Chtimes(path, stamp, stamp)
+	s := NewStore(path)
+	s.Load()
+
+	write(t, path, cfgWith(7)) // same length, different content
+	os.Chtimes(path, stamp, stamp)
+	settle(t, s)
+	expect(t, "the change is picked up", hasButton(s.Config(), 7), true)
+	expect(t, "and the old mapping is gone", hasButton(s.Config(), 9), false)
+}

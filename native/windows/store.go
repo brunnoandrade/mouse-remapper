@@ -1,17 +1,23 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 )
 
+// fileStamp identifies the content of the file. It is a hash rather than a modification time: on Windows the
+// modification time is coarse, so a quick rewrite that keeps the size would otherwise go unnoticed.
 type fileStamp struct {
-	mod  time.Time
 	size int64
+	sum  [sha256.Size]byte
+}
+
+func stampOfData(data []byte) fileStamp {
+	return fileStamp{size: int64(len(data)), sum: sha256.Sum256(data)}
 }
 
 // Store keeps the parsed config and follows the file on disk. It mirrors the macOS helper's ConfigStore:
@@ -41,12 +47,13 @@ func (s *Store) Config() Config {
 	return s.cfg
 }
 
-func stampOf(path string) (fileStamp, error) {
-	info, err := os.Stat(path)
+// readStamped reads the file and stamps exactly the bytes that were read.
+func readStamped(path string) ([]byte, fileStamp, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return fileStamp{}, err
+		return nil, fileStamp{}, err
 	}
-	return fileStamp{mod: info.ModTime(), size: info.Size()}, nil
+	return data, stampOfData(data), nil
 }
 
 // Load reads the file now. A missing file is created with the defaults.
@@ -57,7 +64,7 @@ func (s *Store) Load() error {
 }
 
 func (s *Store) loadLocked() error {
-	stamp, err := stampOf(s.path)
+	data, stamp, err := readStamped(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		s.cfg = defaultConfig()
 		if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err == nil {
@@ -68,10 +75,6 @@ func (s *Store) loadLocked() error {
 		s.markLoaded()
 		return nil
 	}
-	if err != nil {
-		return err
-	}
-	data, err := os.ReadFile(s.path)
 	if err != nil {
 		return err
 	}
@@ -89,7 +92,7 @@ func (s *Store) loadLocked() error {
 }
 
 func (s *Store) markLoaded() {
-	if stamp, err := stampOf(s.path); err == nil {
+	if _, stamp, err := readStamped(s.path); err == nil {
 		s.loaded, s.hasStamp = stamp, true
 	}
 	s.hasPend, s.attempts = false, 0
@@ -100,7 +103,7 @@ func (s *Store) Poll() (changed bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	stamp, statErr := stampOf(s.path)
+	_, stamp, statErr := readStamped(s.path)
 	if statErr != nil { // deleted: bring the defaults back, like on first run
 		if errors.Is(statErr, os.ErrNotExist) {
 			return true, s.loadLocked()
