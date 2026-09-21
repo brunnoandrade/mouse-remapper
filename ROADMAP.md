@@ -35,11 +35,12 @@ Legenda: ✅ feito · 🚧 em andamento · ⬜ pendente
 - ✅ A lista "aplicar apenas nestes aplicativos" virou "apps com perfil próprio"; a regra do app sobrepõe a global só para o mesmo gatilho
 - ✅ Ação "Comportamento original" para um app ignorar uma regra global
 
-## Fase 4: diferenciais
+## Fase 4: diferenciais 🚧
 
-- ⬜ Gestos: segurar um botão e arrastar
-- ⬜ Ajustes de scroll: suavização, inversão e aceleração
-- ⬜ Exportar e importar configuração
+- ✅ Gestos: segurar um botão e arrastar (4 direções, 60 px); o clique simples do botão passa a disparar ao soltar
+- ✅ Ajustes de scroll da roda do mouse: inverter direção, velocidade e aceleração (trackpad intocado)
+- ⬜ Suavização do scroll (animar o movimento; exige gerar eventos contínuos e precisa ser afinada com o mouse)
+- ✅ Exportar e importar configuração (o arquivo importado é validado; a aparência não é importada)
 
 ## Fase 5: distribuição
 

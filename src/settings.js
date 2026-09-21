@@ -45,16 +45,39 @@ const TRIGGERS = [
   ...[5, 6, 7, 8].map((n) => ({ value: `button:${n}`, label: `Botão extra ${n}`, trigger: { type: 'button', button: n }, defaultKey: 49 })),
 ];
 
+const DIRECTIONS = [
+  ['left', '← Esquerda', 123],
+  ['right', '→ Direita', 124],
+  ['up', '↑ Cima', 126],
+  ['down', '↓ Baixo', 125],
+];
+const BUTTON_CHOICES = TRIGGERS.filter((t) => t.trigger.type === 'button');
+
+function buttonLabel(button) {
+  const known = BUTTON_CHOICES.find((t) => t.trigger.button === button);
+  return known ? known.label : `Botão ${button}`;
+}
+
 function triggerValue(t) {
-  return t.type === 'scroll' ? `scroll:${t.direction}` : `button:${t.button}`;
+  if (t.type === 'scroll') return `scroll:${t.direction}`;
+  if (t.type === 'gesture') return `gesture:${t.button}:${t.direction}`;
+  return `button:${t.button}`;
 }
 
 function triggerLabel(t) {
+  if (t.type === 'gesture') {
+    const arrow = DIRECTIONS.find(([d]) => d === t.direction);
+    return `Arrastar ${arrow ? arrow[1].split(' ')[0] : t.direction} · ${buttonLabel(t.button)}`;
+  }
   const known = TRIGGERS.find((x) => x.value === triggerValue(t));
   return known ? known.label : `Botão ${t.button}`;
 }
 
 function defaultKeyFor(t) {
+  if (t.type === 'gesture') {
+    const dir = DIRECTIONS.find(([d]) => d === t.direction);
+    return dir ? dir[2] : 49;
+  }
   const known = TRIGGERS.find((x) => x.value === triggerValue(t));
   return known ? known.defaultKey : 49;
 }
@@ -306,18 +329,22 @@ function renderMappings() {
 const editorDialog = document.getElementById('editor');
 let stopDetecting = null;
 
+const GESTURE_OPTION = 'gesture';
+
 function buildTriggerSelect(draft) {
   const select = document.createElement('select');
+  const isGesture = draft.trigger.type === 'gesture';
   const options = TRIGGERS.map((t) => [t.value, t.label]);
-  if (!TRIGGERS.some((t) => t.value === triggerValue(draft.trigger))) {
+  if (!isGesture && !TRIGGERS.some((t) => t.value === triggerValue(draft.trigger))) {
     options.push([triggerValue(draft.trigger), triggerLabel(draft.trigger)]); // e.g. a detected button 9
   }
+  options.push([GESTURE_OPTION, 'Arrastar segurando um botão…']);
   for (const [value, label] of options) {
     const opt = el('option', '', label);
     opt.value = value;
     select.appendChild(opt);
   }
-  select.value = triggerValue(draft.trigger);
+  select.value = isGesture ? GESTURE_OPTION : triggerValue(draft.trigger);
   return select;
 }
 
@@ -355,6 +382,15 @@ function openEditor(existing) {
   error.textContent = '';
   document.getElementById('editorTitle').textContent = isNew ? 'Novo mapeamento' : 'Editar mapeamento';
 
+  // Changing the trigger also moves an untouched default key (e.g. ← for a left gesture) along with it.
+  function changeTrigger(mutate) {
+    const untouchedKey = draft.action.type === 'key' && !draft.action.flags
+      && draft.action.keyCode === defaultKeyFor(draft.trigger);
+    mutate();
+    if (untouchedKey) draft.action.keyCode = defaultKeyFor(draft.trigger);
+    render();
+  }
+
   function render() {
     form.innerHTML = '';
 
@@ -363,11 +399,14 @@ function openEditor(existing) {
     const triggerControls = el('div', 'inline');
     const triggerSelect = buildTriggerSelect(draft);
     triggerSelect.onchange = () => {
-      const untouchedKey = draft.action.type === 'key' && !draft.action.flags
-        && draft.action.keyCode === defaultKeyFor(draft.trigger);
-      draft.trigger = TRIGGERS.find((t) => t.value === triggerSelect.value).trigger;
-      if (untouchedKey) draft.action.keyCode = defaultKeyFor(draft.trigger);
-      render();
+      changeTrigger(() => {
+        if (triggerSelect.value === GESTURE_OPTION) {
+          const button = draft.trigger.type === 'button' ? draft.trigger.button : 3;
+          draft.trigger = { type: 'gesture', button, direction: 'left' };
+        } else {
+          draft.trigger = TRIGGERS.find((t) => t.value === triggerSelect.value).trigger;
+        }
+      });
     };
     const detectBtn = el('button', 'keybtn', 'Detectar');
     detectBtn.type = 'button';
@@ -378,7 +417,9 @@ function openEditor(existing) {
       detectBtn.classList.add('capturing');
       error.textContent = '';
       detectButton(
-        (button) => { draft.trigger = { type: 'button', button }; render(); },
+        (button) => changeTrigger(() => {
+          draft.trigger = draft.trigger.type === 'gesture' ? { ...draft.trigger, button } : { type: 'button', button };
+        }),
         (message) => { error.textContent = message; render(); }
       );
     };
@@ -386,6 +427,38 @@ function openEditor(existing) {
     triggerControls.appendChild(detectBtn);
     triggerRow.appendChild(triggerControls);
     form.appendChild(triggerRow);
+
+    if (draft.trigger.type === 'gesture') {
+      const buttonRow = el('div', 'row field');
+      buttonRow.appendChild(el('span', 'small', 'Botão:'));
+      const buttonSelect = document.createElement('select');
+      const choices = BUTTON_CHOICES.map((t) => [t.trigger.button, t.label]);
+      if (!choices.some(([n]) => n === draft.trigger.button)) choices.push([draft.trigger.button, buttonLabel(draft.trigger.button)]);
+      for (const [n, label] of choices) {
+        const opt = el('option', '', label);
+        opt.value = n;
+        buttonSelect.appendChild(opt);
+      }
+      buttonSelect.value = draft.trigger.button;
+      buttonSelect.onchange = () => changeTrigger(() => { draft.trigger.button = Number(buttonSelect.value); });
+      buttonRow.appendChild(buttonSelect);
+      form.appendChild(buttonRow);
+
+      const dirRow = el('div', 'row field');
+      dirRow.appendChild(el('span', 'small', 'Direção:'));
+      const dirSelect = document.createElement('select');
+      for (const [value, label] of DIRECTIONS) {
+        const opt = el('option', '', label);
+        opt.value = value;
+        dirSelect.appendChild(opt);
+      }
+      dirSelect.value = draft.trigger.direction;
+      dirSelect.onchange = () => changeTrigger(() => { draft.trigger.direction = dirSelect.value; });
+      dirRow.appendChild(dirSelect);
+      form.appendChild(dirRow);
+
+      form.appendChild(el('p', 'small hint', 'Segure o botão e arraste. Um clique simples nesse botão passa a disparar ao soltar, e o cursor fica parado durante o gesto.'));
+    }
 
     const actionRow = el('div', 'row field');
     actionRow.appendChild(el('span', 'small', 'Ação:'));
@@ -448,7 +521,6 @@ async function saveNow() {
   saveTimer = null;
   await window.api.setConfig(state);
   setStatus('Salvo automaticamente. As alterações já estão ativas.', 'ok');
-  clearTimeout(statusTimer);
   statusTimer = setTimeout(() => setStatus(''), 2500);
 }
 
@@ -458,6 +530,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 function setStatus(msg, kind) {
+  clearTimeout(statusTimer); // a newer message must not be wiped by an older message's auto-clear
   const el = document.getElementById('status');
   el.textContent = msg;
   el.className = kind || '';
@@ -691,16 +764,78 @@ async function initLoginItem() {
   });
 }
 
-async function init() {
-  state = await window.api.getConfig();
+// ---- Mouse scroll adjustments ----
+
+const scrollInvertInput = document.getElementById('scrollInvert');
+const scrollSpeedInput = document.getElementById('scrollSpeed');
+const scrollAccelInput = document.getElementById('scrollAccel');
+
+function renderScrollSettings() {
+  scrollInvertInput.checked = state.scroll.invert;
+  scrollSpeedInput.value = state.scroll.speed;
+  scrollAccelInput.value = Math.round(state.scroll.acceleration * 100);
+  document.getElementById('scrollSpeedValue').textContent = `${Number(state.scroll.speed).toFixed(1)}×`;
+  document.getElementById('scrollAccelValue').textContent = `${Math.round(state.scroll.acceleration * 100)}%`;
+}
+
+scrollInvertInput.addEventListener('change', () => {
+  state.scroll.invert = scrollInvertInput.checked;
+  scheduleSave();
+});
+scrollSpeedInput.addEventListener('input', () => {
+  state.scroll.speed = parseFloat(scrollSpeedInput.value);
+  renderScrollSettings();
+  scheduleSave();
+});
+scrollAccelInput.addEventListener('input', () => {
+  state.scroll.acceleration = parseInt(scrollAccelInput.value, 10) / 100;
+  renderScrollSettings();
+  scheduleSave();
+});
+
+// Fills the whole UI from a config; used at startup and after an import.
+async function loadState(cfg) {
+  state = cfg;
+  state.scroll = { invert: false, speed: 1, acceleration: 0, ...state.scroll };
+  selectedProfile = 'default';
   renderTheme();
-  renderMappings();
   thresholdInput.value = state.scrollThreshold;
   suppressScrollInput.checked = state.suppressOriginalScroll;
+  renderScrollSettings();
+  renderProfiles();
+  renderMappings();
+  await renderAppList();
+}
+
+// ---- Export / import ----
+
+document.getElementById('exportBtn').addEventListener('click', async () => {
+  if (saveTimer) await saveNow(); // export what is on screen
+  const res = await window.api.exportConfig();
+  if (res.ok) setStatus(`Configuração exportada em ${res.path}`, 'ok');
+});
+
+document.getElementById('importBtn').addEventListener('click', async () => {
+  const ok = confirm('Importar configuração?\n\nIsso substitui todos os perfis, mapeamentos e ajustes atuais (a aparência é mantida). Exporte antes se quiser guardar a configuração de agora.');
+  if (!ok) return;
+  clearTimeout(saveTimer); // a pending autosave must not overwrite what is about to be imported
+  saveTimer = null;
+  const res = await window.api.importConfig();
+  if (res.canceled) return;
+  if (res.error) {
+    setStatus(`Não foi possível importar: ${res.error}`, 'warn');
+    return;
+  }
+  await loadState(res.config);
+  const note = res.dropped ? ` (${res.dropped} ${res.dropped === 1 ? 'item inválido ignorado' : 'itens inválidos ignorados'})` : '';
+  setStatus(`Configuração importada${note}.`, 'ok');
+});
+
+async function init() {
   initLoginItem();
   refreshPermission();
   setInterval(refreshPermission, 2000);
-  await renderAppList();
+  await loadState(await window.api.getConfig());
 }
 
 init();

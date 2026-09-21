@@ -1,22 +1,12 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, nativeTheme, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, nativeImage, nativeTheme, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const crypto = require('crypto');
 const { spawn } = require('child_process');
+const { DEFAULT_CONFIG, THEMES, migrateConfig, sanitizeConfig } = require('./config');
 
 const CONFIG_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'MouseRemapper');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
-
-const DEFAULT_CONFIG = {
-  defaultProfile: { enabled: true, mappings: [] },
-  appProfiles: {}, // { [bundleId]: { mappings } }
-  scrollThreshold: 4.0,
-  suppressOriginalScroll: true,
-  theme: 'system',
-};
-
-const THEMES = ['system', 'light', 'dark'];
 
 function ensureConfig() {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
@@ -25,57 +15,11 @@ function ensureConfig() {
   }
 }
 
-// Fixed per-trigger fields used by older configs, and the key each one defaulted to.
-const LEGACY_MAPPINGS = {
-  scrollUp: { trigger: { type: 'scroll', direction: 'up' }, defaultKey: 126 },
-  scrollDown: { trigger: { type: 'scroll', direction: 'down' }, defaultKey: 125 },
-  middleClick: { trigger: { type: 'button', button: 2 }, defaultKey: 49 },
-  sideBack: { trigger: { type: 'button', button: 3 }, defaultKey: 123 },
-  sideForward: { trigger: { type: 'button', button: 4 }, defaultKey: 124 },
-};
-
-// Older configs had one fixed field per trigger ({ enabled, keyCode, flags } or { enabled, action });
-// they become entries of the generic `mappings` list. Untouched, disabled defaults are dropped.
-function migrateToMappings(cfg) {
-  if (Array.isArray(cfg.mappings) || cfg.defaultProfile) return cfg;
-  const mappings = [];
-  for (const [key, { trigger, defaultKey }] of Object.entries(LEGACY_MAPPINGS)) {
-    const m = cfg[key];
-    if (!m) continue;
-    const action = m.action || { type: 'key', keyCode: m.keyCode, flags: m.flags || 0 };
-    const untouched = action.type === 'key' && action.keyCode === defaultKey && !action.flags;
-    if (!m.enabled && untouched) continue;
-    mappings.push({ id: crypto.randomUUID(), enabled: !!m.enabled, trigger, action });
-  }
-  const { scrollUp, scrollDown, middleClick, sideBack, sideForward, suppressOriginalMiddleClick, ...rest } = cfg;
-  return { ...rest, mappings };
-}
-
-// The single `mappings` list + `targetApps` allowlist become profiles. To keep behavior identical, every
-// allowlisted app gets its own copy of the mappings and the default profile starts disabled and empty;
-// with no allowlist the mappings were inactive before, so they land in the (disabled) default profile.
-function migrateToProfiles(cfg) {
-  if (cfg.defaultProfile) return cfg;
-  const { mappings = [], targetApps = [], ...rest } = cfg;
-  const appProfiles = {};
-  for (const bundleId of targetApps) {
-    appProfiles[bundleId] = { mappings: mappings.map((m) => ({ ...structuredClone(m), id: crypto.randomUUID() })) };
-  }
-  return {
-    ...rest,
-    defaultProfile: { enabled: false, mappings: targetApps.length ? [] : mappings },
-    appProfiles,
-  };
-}
-
-function migrateConfig(cfg) {
-  return migrateToProfiles(migrateToMappings(cfg));
-}
-
 function readConfig() {
   ensureConfig();
   try {
-    return { ...DEFAULT_CONFIG, ...migrateConfig(JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'))) };
+    const cfg = migrateConfig(JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')));
+    return { ...DEFAULT_CONFIG, ...cfg, scroll: { ...DEFAULT_CONFIG.scroll, ...cfg.scroll } };
   } catch {
     return DEFAULT_CONFIG;
   }
@@ -202,6 +146,48 @@ ipcMain.handle('config:set', (_evt, cfg) => {
   writeConfig(cfg);
   return true;
 });
+const MAX_IMPORT_BYTES = 2 * 1024 * 1024;
+
+// The theme is a local preference, so exported files never carry it.
+ipcMain.handle('config:export', async () => {
+  const { canceled, filePath } = await dialog.showSaveDialog(settingsWindow || undefined, {
+    title: 'Exportar configuração',
+    defaultPath: 'mouse-remapper-config.json',
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+  });
+  if (canceled || !filePath) return { canceled: true };
+  const { theme, ...portable } = readConfig();
+  fs.writeFileSync(filePath, JSON.stringify({ app: 'mouse-remapper', version: 1, config: portable }, null, 2));
+  return { ok: true, path: filePath };
+});
+
+// Imported files are untrusted: everything goes through sanitizeConfig before it can reach config.json,
+// which the helper reads.
+ipcMain.handle('config:import', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(settingsWindow || undefined, {
+    title: 'Importar configuração',
+    properties: ['openFile'],
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+  });
+  if (canceled || filePaths.length === 0) return { canceled: true };
+
+  try {
+    if (fs.statSync(filePaths[0]).size > MAX_IMPORT_BYTES) return { error: 'O arquivo é grande demais para ser uma configuração.' };
+    let raw;
+    try {
+      raw = JSON.parse(fs.readFileSync(filePaths[0], 'utf8'));
+    } catch {
+      return { error: 'O arquivo não é um JSON válido.' };
+    }
+    const { config, dropped } = sanitizeConfig(raw);
+    const merged = { ...config, theme: readConfig().theme };
+    writeConfig(merged);
+    return { ok: true, config: merged, dropped };
+  } catch (err) {
+    return { error: err.message };
+  }
+});
+
 ipcMain.handle('theme:set', (_evt, theme) => {
   if (!THEMES.includes(theme)) return false;
   nativeTheme.themeSource = theme;

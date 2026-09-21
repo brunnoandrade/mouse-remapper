@@ -115,14 +115,34 @@ extension Profile {
     }
 }
 
+/// Adjustments for plain mouse-wheel scrolling (scroll that no mapping consumed).
+struct ScrollSettings: Codable {
+    var invert: Bool
+    var speed: Double        // multiplier, 0.5...4
+    var acceleration: Double // 0...1: extra boost while the wheel is spun fast
+
+    static let standard = ScrollSettings(invert: false, speed: 1, acceleration: 0)
+    var isStandard: Bool { !invert && speed == 1 && acceleration == 0 }
+}
+
+extension ScrollSettings {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        invert = try c.decodeIfPresent(Bool.self, forKey: .invert) ?? false
+        speed = min(4, max(0.5, try c.decodeIfPresent(Double.self, forKey: .speed) ?? 1))
+        acceleration = min(1, max(0, try c.decodeIfPresent(Double.self, forKey: .acceleration) ?? 0))
+    }
+}
+
 struct Config: Codable {
     var defaultProfile: Profile
     var appProfiles: [String: Profile] // keyed by bundle identifier
     var scrollThreshold: Double // accumulated deltaY needed to fire one action
     var suppressOriginalScroll: Bool
+    var scroll: ScrollSettings
 
     private enum CodingKeys: String, CodingKey {
-        case defaultProfile, appProfiles, scrollThreshold, suppressOriginalScroll
+        case defaultProfile, appProfiles, scrollThreshold, suppressOriginalScroll, scroll
     }
 }
 
@@ -134,6 +154,7 @@ extension Config {
         appProfiles = try c.decodeIfPresent([String: Profile].self, forKey: .appProfiles) ?? [:]
         scrollThreshold = try c.decodeIfPresent(Double.self, forKey: .scrollThreshold) ?? 4.0
         suppressOriginalScroll = try c.decodeIfPresent(Bool.self, forKey: .suppressOriginalScroll) ?? true
+        scroll = try c.decodeIfPresent(ScrollSettings.self, forKey: .scroll) ?? .standard
     }
 }
 
@@ -141,7 +162,8 @@ let defaultConfig = Config(
     defaultProfile: Profile(enabled: true, mappings: []),
     appProfiles: [:],
     scrollThreshold: 4.0,
-    suppressOriginalScroll: true
+    suppressOriginalScroll: true,
+    scroll: .standard
 )
 
 /// The mapping that applies to the frontmost app: its own profile first, then the default profile.
@@ -156,6 +178,10 @@ func findMapping(in cfg: Config, matching predicate: (Mapping) -> Bool) -> Mappi
 }
 
 let configURL: URL = {
+    // Test/debug hook: run against a throwaway config instead of the user's real one.
+    if let override = ProcessInfo.processInfo.environment["MOUSE_REMAP_CONFIG"] {
+        return URL(fileURLWithPath: override)
+    }
     let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("MouseRemapper")
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -165,15 +191,42 @@ let configURL: URL = {
 final class ConfigStore {
     private(set) var config: Config = defaultConfig
     private var source: DispatchSourceFileSystemObject?
+    private var pendingReload: DispatchWorkItem?
+    private var poller: DispatchSourceTimer?
+    private var lastLoaded: FileStamp?
 
-    func load() {
-        guard let data = try? Data(contentsOf: configURL),
-              let decoded = try? JSONDecoder().decode(Config.self, from: data) else {
+    /// Modification date + size: enough to notice that the file changed behind a missed watcher event.
+    private struct FileStamp: Equatable {
+        var modified: Date
+        var size: Int
+    }
+
+    private func currentStamp() -> FileStamp? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: configURL.path),
+              let modified = attrs[.modificationDate] as? Date,
+              let size = attrs[.size] as? Int else { return nil }
+        return FileStamp(modified: modified, size: size)
+    }
+
+    /// Reads the config file. Returns false when it exists but can't be decoded (e.g. it is caught halfway
+    /// through a write). In that case the current config is kept and the user's file is never touched:
+    /// only a *missing* file gets replaced by the defaults.
+    @discardableResult
+    func load() -> Bool {
+        guard FileManager.default.fileExists(atPath: configURL.path) else {
             config = defaultConfig
             save()
-            return
+            lastLoaded = currentStamp()
+            return true
+        }
+        let stamp = currentStamp()
+        guard let data = try? Data(contentsOf: configURL), !data.isEmpty,
+              let decoded = try? JSONDecoder().decode(Config.self, from: data) else {
+            return false
         }
         config = decoded
+        lastLoaded = stamp
+        return true
     }
 
     func save() {
@@ -182,18 +235,59 @@ final class ConfigStore {
         }
     }
 
-    func watch() {
-        load()
+    /// Reloads shortly after the last change, so a write in progress has time to finish; retries while the
+    /// file doesn't decode yet.
+    private func scheduleReload(attempt: Int = 0) {
+        pendingReload?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.pendingReload = nil
+            if self.load() {
+                FileHandle.standardError.write("[MouseRemapHelper] config reloaded\n".data(using: .utf8)!)
+            } else if attempt < 20 {
+                self.scheduleReload(attempt: attempt + 1)
+            } else {
+                // Give up until the file changes again, so a corrupt file isn't re-read forever.
+                self.lastLoaded = self.currentStamp()
+                FileHandle.standardError.write("[MouseRemapHelper] config unreadable, keeping the previous one\n".data(using: .utf8)!)
+            }
+        }
+        pendingReload = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + (attempt == 0 ? 0.05 : 0.1), execute: item)
+    }
+
+    private func startWatching() {
+        source?.cancel()
         let fd = open(configURL.path, O_EVTONLY)
         guard fd >= 0 else { return }
-        let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete], queue: .main)
+        let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete, .extend], queue: .main)
         src.setEventHandler { [weak self] in
-            self?.load()
-            FileHandle.standardError.write("[MouseRemapHelper] config reloaded\n".data(using: .utf8)!)
+            guard let self = self else { return }
+            // The file was replaced or removed (e.g. an editor's atomic save): the descriptor is stale.
+            if !src.data.isDisjoint(with: [.rename, .delete]) { self.startWatching() }
+            self.scheduleReload()
         }
         src.setCancelHandler { close(fd) }
         src.resume()
-        self.source = src
+        source = src
+    }
+
+    func watch() {
+        if !load() {
+            FileHandle.standardError.write("[MouseRemapHelper] config unreadable at startup, using defaults in memory (file left untouched)\n".data(using: .utf8)!)
+        }
+        startWatching()
+
+        // Safety net: file-system events can be coalesced or missed, so also compare the file once a second.
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 1, repeating: 1)
+        timer.setEventHandler { [weak self] in
+            guard let self = self, self.pendingReload == nil else { return }
+            if let stamp = self.currentStamp(), stamp != self.lastLoaded { self.scheduleReload() }
+            else if self.source == nil { self.startWatching() }
+        }
+        timer.resume()
+        poller = timer
     }
 }
 
@@ -298,7 +392,15 @@ func performSystem(_ id: String) {
     }
 }
 
+// Test/debug hook: print what would have been done instead of doing it.
+let dryRun = ProcessInfo.processInfo.environment["MOUSE_REMAP_DRY_RUN"] != nil
+
 func perform(_ action: Action, at location: CGPoint) {
+    if dryRun {
+        print("ACTION \(action.type) \(action.id ?? action.bundleId ?? "key=\(action.keyCode ?? 0),flags=\(action.flags ?? 0)")")
+        fflush(stdout)
+        return
+    }
     switch action.type {
     case "key":
         postKey(keyCode: action.keyCode ?? 0, flags: CGEventFlags(rawValue: action.flags ?? 0))
@@ -313,6 +415,142 @@ func perform(_ action: Action, at location: CGPoint) {
     }
 }
 
+// MARK: - Gestures (hold a button and drag)
+
+enum GestureDirection: String {
+    case left, right, up, down
+}
+
+/// Tracks one held button and reports the drag direction the first time it travels far enough.
+/// Pure state (no CGEvent), so it can be tested on its own.
+struct GestureTracker {
+    static let distance = 60.0 // points the pointer must travel before the gesture counts
+
+    private(set) var button: Int?
+    private(set) var fired = false
+    private var dx = 0.0
+    private var dy = 0.0
+
+    mutating func begin(button: Int) {
+        self.button = button
+        dx = 0
+        dy = 0
+        fired = false
+    }
+
+    mutating func reset() {
+        button = nil
+        dx = 0
+        dy = 0
+        fired = false
+    }
+
+    /// Feed one drag delta. Returns the direction once, when the distance is first crossed.
+    mutating func drag(dx deltaX: Double, dy deltaY: Double) -> GestureDirection? {
+        guard button != nil, !fired else { return nil }
+        dx += deltaX
+        dy += deltaY
+        guard max(abs(dx), abs(dy)) >= Self.distance else { return nil }
+        fired = true
+        if abs(dx) >= abs(dy) { return dx > 0 ? .right : .left }
+        return dy > 0 ? .down : .up // screen coordinates: +y points down
+    }
+}
+
+var gestureTracker = GestureTracker()
+
+/// Marks events this helper posted itself, so the tap lets them through instead of intercepting them again.
+let selfEventMarker: Int64 = 0x4D52_4D50 // "MRMP"
+
+/// A held button that turned out to be a plain click is replayed, because the original press was swallowed.
+func replayClick(button: Int, at location: CGPoint) {
+    if dryRun {
+        print("REPLAY button=\(button)")
+        fflush(stdout)
+        return
+    }
+    for type in [CGEventType.otherMouseDown, .otherMouseUp] {
+        // CGMouseButton only names left/right/center; any extra button is set through the button-number field.
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: location, mouseButton: .center) else { return }
+        event.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button))
+        event.setIntegerValueField(.eventSourceUserData, value: selfEventMarker)
+        event.post(tap: .cghidEventTap)
+    }
+}
+
+/// Whether the frontmost app's profile (or the default one) defines any gesture on this button.
+func hasGesture(in cfg: Config, button: Int) -> Bool {
+    for direction in ["left", "right", "up", "down"] {
+        if findMapping(in: cfg, matching: { $0.trigger.type == "gesture" && $0.trigger.button == button && $0.trigger.direction == direction }) != nil {
+            return true
+        }
+    }
+    return false
+}
+
+// MARK: - Scroll adjustment
+
+/// Rescales mouse-wheel events (never trackpad ones). Wheel deltas are integers, so a fractional result is
+/// carried over to the next event instead of being lost: with speed 0.5, two ticks still add up to one line.
+struct ScrollAdjuster {
+    private var lastEvent: TimeInterval = 0
+    private var carry: [UInt32: Double] = [:]
+
+    // Below `slowRate` events/s there is no boost; at `fastRate` and above it is the full one.
+    static let slowRate = 8.0
+    static let fastRate = 40.0
+    static let maxBoost = 3.0 // acceleration 1.0 => up to +300%
+
+    /// Speed multiplier for an event arriving at `now`, including the acceleration boost.
+    mutating func factor(for settings: ScrollSettings, now: TimeInterval) -> Double {
+        let dt = now - lastEvent
+        lastEvent = now
+        // A pause means a new scroll gesture: start from the slow end again.
+        let rate = dt > 0.3 ? 0 : 1 / max(dt, 0.005)
+        let t = min(1, max(0, (rate - Self.slowRate) / (Self.fastRate - Self.slowRate)))
+        return settings.speed * (1 + settings.acceleration * Self.maxBoost * t)
+    }
+
+    /// Scales an integer delta, keeping the fractional part for the next event.
+    private mutating func scaledWhole(_ original: Int64, by factor: Double, field: CGEventField) -> Int64 {
+        let raw = Double(original) * factor + (carry[field.rawValue] ?? 0)
+        let whole = raw.rounded(.towardZero)
+        carry[field.rawValue] = raw - whole
+        return Int64(whole)
+    }
+
+    /// The line, point and fixed-point deltas of one axis are coupled inside CGEvent: writing the line delta
+    /// recomputes the point delta. So all three originals are read first and written line -> point -> fixed;
+    /// any other order leaves the point delta wrong.
+    private mutating func scaleAxis(_ event: CGEvent, line: CGEventField, point: CGEventField, fixed: CGEventField, by factor: Double) {
+        let originalLine = event.getIntegerValueField(line)
+        let originalPoint = event.getIntegerValueField(point)
+        let originalFixed = event.getDoubleValueField(fixed)
+
+        event.setIntegerValueField(line, value: scaledWhole(originalLine, by: factor, field: line))
+        event.setIntegerValueField(point, value: scaledWhole(originalPoint, by: factor, field: point))
+        event.setDoubleValueField(fixed, value: originalFixed * factor)
+    }
+
+    /// Returns false (and leaves the event alone) for trackpad / continuous events.
+    @discardableResult
+    mutating func adjust(_ event: CGEvent, settings: ScrollSettings, now: TimeInterval) -> Bool {
+        guard !settings.isStandard,
+              event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0 else { return false }
+
+        let speed = factor(for: settings, now: now)
+        let vertical = settings.invert ? -speed : speed
+
+        scaleAxis(event, line: .scrollWheelEventDeltaAxis1, point: .scrollWheelEventPointDeltaAxis1,
+                  fixed: .scrollWheelEventFixedPtDeltaAxis1, by: vertical)
+        scaleAxis(event, line: .scrollWheelEventDeltaAxis2, point: .scrollWheelEventPointDeltaAxis2,
+                  fixed: .scrollWheelEventFixedPtDeltaAxis2, by: speed)
+        return true
+    }
+}
+
+var scrollAdjuster = ScrollAdjuster()
+
 // MARK: - Scroll accumulation state
 
 var scrollAccumulator: Double = 0
@@ -324,6 +562,12 @@ func eventTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
         if let tap = globalTap {
             CGEvent.tapEnable(tap: tap, enable: true)
         }
+        gestureTracker.reset() // the release of a held button may have been missed
+        return Unmanaged.passUnretained(event)
+    }
+
+    // Our own replayed clicks go straight through.
+    if event.getIntegerValueField(.eventSourceUserData) == selfEventMarker {
         return Unmanaged.passUnretained(event)
     }
 
@@ -332,12 +576,18 @@ func eventTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
     switch type {
     case .scrollWheel:
         let deltaY = event.getDoubleValueField(.scrollWheelEventDeltaAxis1)
-        if deltaY == 0 { return Unmanaged.passUnretained(event) }
+        if deltaY == 0 {
+            scrollAdjuster.adjust(event, settings: cfg.scroll, now: ProcessInfo.processInfo.systemUptime)
+            return Unmanaged.passUnretained(event)
+        }
 
         let direction = deltaY > 0 ? "up" : "down"
         guard let mapping = findMapping(in: cfg, matching: {
             $0.trigger.type == "scroll" && $0.trigger.direction == direction
-        }), mapping.action.type != "none" else { return Unmanaged.passUnretained(event) }
+        }), mapping.action.type != "none" else {
+            scrollAdjuster.adjust(event, settings: cfg.scroll, now: ProcessInfo.processInfo.systemUptime)
+            return Unmanaged.passUnretained(event)
+        }
 
         scrollAccumulator += abs(deltaY)
         if scrollAccumulator >= cfg.scrollThreshold {
@@ -347,8 +597,47 @@ func eventTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
 
         return cfg.suppressOriginalScroll ? nil : Unmanaged.passUnretained(event)
 
-    case .otherMouseDown, .otherMouseUp:
+    case .otherMouseDown, .otherMouseUp, .otherMouseDragged:
         let button = Int(event.getIntegerValueField(.mouseEventButtonNumber))
+
+        // A button with gestures is held back on press so the drag can be told apart from a click.
+        if type == .otherMouseDown && hasGesture(in: cfg, button: button) {
+            gestureTracker.begin(button: button)
+            return nil
+        }
+
+        if gestureTracker.button == button {
+            switch type {
+            case .otherMouseDragged:
+                let delta = (event.getDoubleValueField(.mouseEventDeltaX), event.getDoubleValueField(.mouseEventDeltaY))
+                if let direction = gestureTracker.drag(dx: delta.0, dy: delta.1),
+                   let mapping = findMapping(in: cfg, matching: {
+                       $0.trigger.type == "gesture" && $0.trigger.button == button && $0.trigger.direction == direction.rawValue
+                   }), mapping.action.type != "none" {
+                    perform(mapping.action, at: event.location)
+                }
+                return nil // the pointer stays put while the gesture is being made
+
+            case .otherMouseUp:
+                let wasGesture = gestureTracker.fired
+                gestureTracker.reset()
+                if wasGesture { return nil }
+                // No drag: it was a click. Run the button's own mapping, or give the click back to the app.
+                if let mapping = findMapping(in: cfg, matching: { $0.trigger.type == "button" && $0.trigger.button == button }),
+                   mapping.action.type != "none" {
+                    perform(mapping.action, at: event.location)
+                } else {
+                    replayClick(button: button, at: event.location)
+                }
+                return nil
+
+            default:
+                break
+            }
+        }
+
+        if type == .otherMouseDragged { return Unmanaged.passUnretained(event) }
+
         guard let mapping = findMapping(in: cfg, matching: {
             $0.trigger.type == "button" && $0.trigger.button == button
         }), mapping.action.type != "none" else { return Unmanaged.passUnretained(event) }
@@ -371,7 +660,8 @@ var globalTap: CFMachPort?
 let eventMask: CGEventMask =
     (1 << CGEventType.scrollWheel.rawValue) |
     (1 << CGEventType.otherMouseDown.rawValue) |
-    (1 << CGEventType.otherMouseUp.rawValue)
+    (1 << CGEventType.otherMouseUp.rawValue) |
+    (1 << CGEventType.otherMouseDragged.rawValue)
 
 guard let tap = CGEvent.tapCreate(
     tap: .cgSessionEventTap,
