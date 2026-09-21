@@ -36,9 +36,25 @@ jobs:
       - run: npm ci
       - run: npm test
       - name: Build (helper + app)
-        run: npm run dist
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run dist 2>&1 | tee build.log
       - name: Verify the package contents
-        run: npm run verify-package
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run verify-package 2>&1 | tee verify.log
+      - name: Show the log of a failed step
+        if: failure()
+        shell: bash
+        run: |
+          # Job logs need a token to read through the API; annotations do not.
+          for f in build.log verify.log; do
+            [ -f "$f" ] || continue
+            msg=$(tail -45 "$f" | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=$f (${{ matrix.os }})::$msg"
+          done
 
       - name: Smoke test the packaged app (macOS)
         if: runner.os == 'macOS'
