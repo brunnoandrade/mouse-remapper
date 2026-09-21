@@ -51,7 +51,8 @@ O app Electron já é multiplataforma; o que muda é o helper nativo (no macOS, 
 - ✅ Electron por plataforma (`src/platform.js`): pasta da config (`%AppData%`), nome/local do helper, ícone de bandeja, menu, item de login (argumento `--hidden`), sem card de permissão, ícones dos apps via `app.getFileIcon`
 - ✅ Interface por plataforma: modificadores Ctrl/Alt/Shift/Win, catálogo de ações do Windows (Visão de tarefas, áreas de trabalho virtuais, Win+Shift+S), sem botões extras 5+
 - ✅ Testes que rodam num runner Windows (`.github/workflows/windows-helper.yml`): existência de cada API do Win32, layout das estruturas de `SendInput`, e o hook real com eventos injetados
-- ⬜ **Validar num Windows de verdade**: rodar esse workflow (precisa de push) e testar com um mouse
+- ✅ Validado num runner Windows (GitHub Actions): 40 testes, incluindo o hook real com eventos injetados (botão lateral engolido, gesto, inverter/velocidade, suavização). A primeira execução achou dois bugs reais, já corrigidos: `SendInput` dentro do callback do hook não era entregue, e a data de modificação do arquivo é grossa demais para detectar reescritas
+- ⬜ **Testar no Windows com um mouse de verdade** (o CI injeta eventos sintéticos): botão lateral, gestos, sensação da suavização, e a interface do Electron rodando no Windows
 - ⬜ Empacotamento e assinatura para Windows (junto com a Fase 5)
 
 Limitações conhecidas no Windows:
