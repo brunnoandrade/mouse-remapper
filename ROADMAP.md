@@ -64,8 +64,11 @@ Limitações conhecidas no Windows:
 
 ## Fase 5: distribuição
 
-- ⬜ Assinatura (Developer ID) e notarização
-- ⬜ DMG e atualização automática (`electron-updater`)
+- ✅ Empacotamento: macOS (`.app`, `.dmg`, `.zip`, arm64) e Windows (instalador NSIS e `.zip`, x64), com `npm run dist` e `npm run verify-package`
+- ✅ Pacote testado de verdade (`.github/workflows/package.yml`): no macOS o app empacotado abre e o helper responde; no Windows o instalador é executado em silêncio, o app instalado abre e inicia o helper, e o desinstalador roda
+- ⬜ Assinatura de distribuição: Developer ID + notarização (Mac) e certificado de código (Windows). Hoje o build do Mac é assinado com a sua identidade de desenvolvimento (vale só nesta máquina) e o do Windows não é assinado (SmartScreen avisa na primeira vez)
+- ⬜ Atualização automática (`electron-updater`), que exige um lugar para publicar as versões (por exemplo, GitHub Releases)
+- ⬜ Mac Intel e Windows arm64 (hoje: Mac Apple Silicon e Windows x64)
 - ⬜ Interface em inglês (i18n), se o público for além de uso pessoal
 
 ## Em aberto
