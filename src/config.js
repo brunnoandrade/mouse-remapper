@@ -7,7 +7,7 @@ const DEFAULT_CONFIG = {
   appProfiles: {}, // { [bundleId]: { mappings } }
   scrollThreshold: 4.0, // accumulated delta needed for one *remapped* scroll step
   suppressOriginalScroll: true,
-  scroll: { invert: false, speed: 1, acceleration: 0 }, // adjusts un-remapped mouse-wheel scrolling
+  scroll: { invert: false, speed: 1, acceleration: 0, smoothing: 0 }, // adjusts un-remapped mouse-wheel scrolling
   theme: 'system',
 };
 
@@ -157,6 +157,7 @@ function sanitizeConfig(raw) {
         invert: scroll.invert === true,
         speed: clamp(Number(scroll.speed), 0.5, 4, 1),
         acceleration: clamp(Number(scroll.acceleration), 0, 1, 0),
+        smoothing: clamp(Number(scroll.smoothing), 0, 1, 0),
       },
     },
   };

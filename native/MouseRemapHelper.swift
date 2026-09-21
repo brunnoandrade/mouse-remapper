@@ -120,9 +120,10 @@ struct ScrollSettings: Codable {
     var invert: Bool
     var speed: Double        // multiplier, 0.5...4
     var acceleration: Double // 0...1: extra boost while the wheel is spun fast
+    var smoothing: Double    // 0...1: 0 = off; higher = longer glide after each wheel tick
 
-    static let standard = ScrollSettings(invert: false, speed: 1, acceleration: 0)
-    var isStandard: Bool { !invert && speed == 1 && acceleration == 0 }
+    static let standard = ScrollSettings(invert: false, speed: 1, acceleration: 0, smoothing: 0)
+    var isStandard: Bool { !invert && speed == 1 && acceleration == 0 && smoothing == 0 }
 }
 
 extension ScrollSettings {
@@ -131,6 +132,7 @@ extension ScrollSettings {
         invert = try c.decodeIfPresent(Bool.self, forKey: .invert) ?? false
         speed = min(4, max(0.5, try c.decodeIfPresent(Double.self, forKey: .speed) ?? 1))
         acceleration = min(1, max(0, try c.decodeIfPresent(Double.self, forKey: .acceleration) ?? 0))
+        smoothing = min(1, max(0, try c.decodeIfPresent(Double.self, forKey: .smoothing) ?? 0))
     }
 }
 
@@ -532,14 +534,19 @@ struct ScrollAdjuster {
         event.setDoubleValueField(fixed, value: originalFixed * factor)
     }
 
+    /// Vertical and horizontal multipliers for an event arriving at `now` (invert only affects vertical).
+    mutating func scales(for settings: ScrollSettings, now: TimeInterval) -> (vertical: Double, horizontal: Double) {
+        let speed = factor(for: settings, now: now)
+        return (settings.invert ? -speed : speed, speed)
+    }
+
     /// Returns false (and leaves the event alone) for trackpad / continuous events.
     @discardableResult
     mutating func adjust(_ event: CGEvent, settings: ScrollSettings, now: TimeInterval) -> Bool {
         guard !settings.isStandard,
               event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0 else { return false }
 
-        let speed = factor(for: settings, now: now)
-        let vertical = settings.invert ? -speed : speed
+        let (vertical, speed) = scales(for: settings, now: now)
 
         scaleAxis(event, line: .scrollWheelEventDeltaAxis1, point: .scrollWheelEventPointDeltaAxis1,
                   fixed: .scrollWheelEventFixedPtDeltaAxis1, by: vertical)
@@ -550,6 +557,137 @@ struct ScrollAdjuster {
 }
 
 var scrollAdjuster = ScrollAdjuster()
+
+// MARK: - Scroll smoothing
+
+/// Turns discrete wheel ticks into a stream of pixel steps that glides to a stop.
+/// Each frame delivers a fixed fraction of what is still pending (exponential ease-out), so the distance
+/// travelled is exactly what the ticks asked for; sub-pixel remainders are carried from frame to frame.
+/// Pure state (no CGEvent, no timer) so it can be tested on its own.
+struct ScrollSmoother {
+    static let maxPending = 6000.0   // px: a runaway queue would keep scrolling long after the wheel stops
+    static let finishBelow = 0.5     // px: once this little is left, deliver it and stop
+
+    private(set) var pendingX = 0.0
+    private(set) var pendingY = 0.0
+    private var carryX = 0.0
+    private var carryY = 0.0
+
+    var isAnimating: Bool { pendingX != 0 || pendingY != 0 }
+
+    /// Time constant in seconds: 0.015 s (barely there) ... 0.1 s (long glide, about half a second to come to rest).
+    static func tau(for smoothing: Double) -> Double { 0.015 + 0.085 * min(1, max(0, smoothing)) }
+
+    /// Queues distance. A tick against the direction still in flight cancels the old distance in that axis,
+    /// so reversing the wheel takes effect at once instead of after the glide.
+    mutating func add(dx: Double, dy: Double) {
+        pendingX = Self.merged(pendingX, dx)
+        pendingY = Self.merged(pendingY, dy)
+    }
+
+    private static func merged(_ pending: Double, _ added: Double) -> Double {
+        guard added != 0 else { return pending }
+        let base = (pending != 0 && (pending < 0) != (added < 0)) ? 0 : pending
+        return min(maxPending, max(-maxPending, base + added))
+    }
+
+    private static func advance(_ pending: inout Double, _ carry: inout Double, fraction: Double) -> Int {
+        var due = pending * fraction
+        var rest = pending - due
+        if abs(rest) < Self.finishBelow { // final step: hand over everything that is left
+            due = pending
+            rest = 0
+        }
+        pending = rest
+        let total = due + carry
+        // Rounding to nearest (not truncating) keeps a lone last pixel from being held back.
+        let whole = rest == 0 ? total.rounded(.toNearestOrAwayFromZero) : total.rounded(.towardZero)
+        carry = rest == 0 ? 0 : total - whole
+        return Int(whole)
+    }
+
+    /// Advances the glide by `dt` seconds and returns the whole-pixel deltas to emit now.
+    mutating func step(dt: Double, smoothing: Double) -> (dx: Int, dy: Int) {
+        let fraction = 1 - exp(-max(0, dt) / Self.tau(for: smoothing))
+        let dx = Self.advance(&pendingX, &carryX, fraction: fraction)
+        let dy = Self.advance(&pendingY, &carryY, fraction: fraction)
+        return (dx, dy)
+    }
+
+    /// Delivers everything still pending at once (smoothing switched off, tap lost, ...).
+    mutating func flush() -> (dx: Int, dy: Int) {
+        let dx = Int((pendingX + carryX).rounded(.toNearestOrAwayFromZero))
+        let dy = Int((pendingY + carryY).rounded(.toNearestOrAwayFromZero))
+        pendingX = 0; pendingY = 0; carryX = 0; carryY = 0
+        return (dx, dy)
+    }
+}
+
+var scrollSmoother = ScrollSmoother()
+var smoothTimer: DispatchSourceTimer?
+var lastSmoothTick: TimeInterval = 0
+
+/// Posts one pixel-scroll event. Tagged so the tap lets it through instead of smoothing it again.
+func postSmoothedScroll(dx: Int, dy: Int) {
+    if dx == 0 && dy == 0 { return }
+    if dryRun {
+        print("SMOOTH dx=\(dx) dy=\(dy)")
+        fflush(stdout)
+        return
+    }
+    guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
+                              wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0) else { return }
+    event.setIntegerValueField(.eventSourceUserData, value: selfEventMarker)
+    event.post(tap: .cghidEventTap)
+}
+
+func stopSmoothTimer() {
+    smoothTimer?.cancel()
+    smoothTimer = nil
+}
+
+func smoothTick() {
+    let now = ProcessInfo.processInfo.systemUptime
+    let dt = min(0.05, now - lastSmoothTick) // a stalled run loop must not turn into one huge jump
+    lastSmoothTick = now
+
+    let smoothing = store.config.scroll.smoothing
+    let out = smoothing > 0 ? scrollSmoother.step(dt: dt, smoothing: smoothing) : scrollSmoother.flush()
+    postSmoothedScroll(dx: out.dx, dy: out.dy)
+    if !scrollSmoother.isAnimating { stopSmoothTimer() }
+}
+
+func startSmoothTimer() {
+    guard smoothTimer == nil else { return }
+    lastSmoothTick = ProcessInfo.processInfo.systemUptime
+    let timer = DispatchSource.makeTimerSource(queue: .main)
+    timer.schedule(deadline: .now() + .milliseconds(4), repeating: .microseconds(8333)) // ~120 Hz
+    timer.setEventHandler { smoothTick() }
+    timer.resume()
+    smoothTimer = timer
+}
+
+/// Scroll that no mapping consumed: adjust it, or (with smoothing on) swallow it and glide instead.
+func handlePlainScroll(_ event: CGEvent, settings: ScrollSettings) -> Unmanaged<CGEvent>? {
+    let now = ProcessInfo.processInfo.systemUptime
+    guard settings.smoothing > 0, event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0 else {
+        scrollAdjuster.adjust(event, settings: settings, now: now)
+        return Unmanaged.passUnretained(event)
+    }
+
+    // The point delta is what apps scroll by (already ~10 px per line); fall back to lines if it is missing.
+    func pixels(_ point: CGEventField, _ line: CGEventField) -> Double {
+        let p = Double(event.getIntegerValueField(point))
+        return p != 0 ? p : Double(event.getIntegerValueField(line)) * 10
+    }
+    let scales = scrollAdjuster.scales(for: settings, now: now)
+    scrollSmoother.add(
+        dx: pixels(.scrollWheelEventPointDeltaAxis2, .scrollWheelEventDeltaAxis2) * scales.horizontal,
+        dy: pixels(.scrollWheelEventPointDeltaAxis1, .scrollWheelEventDeltaAxis1) * scales.vertical
+    )
+    startSmoothTimer()
+    return nil
+}
 
 // MARK: - Scroll accumulation state
 
@@ -563,6 +701,9 @@ func eventTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
             CGEvent.tapEnable(tap: tap, enable: true)
         }
         gestureTracker.reset() // the release of a held button may have been missed
+        let rest = scrollSmoother.flush()
+        postSmoothedScroll(dx: rest.dx, dy: rest.dy)
+        stopSmoothTimer()
         return Unmanaged.passUnretained(event)
     }
 
@@ -577,16 +718,14 @@ func eventTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
     case .scrollWheel:
         let deltaY = event.getDoubleValueField(.scrollWheelEventDeltaAxis1)
         if deltaY == 0 {
-            scrollAdjuster.adjust(event, settings: cfg.scroll, now: ProcessInfo.processInfo.systemUptime)
-            return Unmanaged.passUnretained(event)
+            return handlePlainScroll(event, settings: cfg.scroll)
         }
 
         let direction = deltaY > 0 ? "up" : "down"
         guard let mapping = findMapping(in: cfg, matching: {
             $0.trigger.type == "scroll" && $0.trigger.direction == direction
         }), mapping.action.type != "none" else {
-            scrollAdjuster.adjust(event, settings: cfg.scroll, now: ProcessInfo.processInfo.systemUptime)
-            return Unmanaged.passUnretained(event)
+            return handlePlainScroll(event, settings: cfg.scroll)
         }
 
         scrollAccumulator += abs(deltaY)

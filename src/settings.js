@@ -769,6 +769,7 @@ async function initLoginItem() {
 const scrollInvertInput = document.getElementById('scrollInvert');
 const scrollSpeedInput = document.getElementById('scrollSpeed');
 const scrollAccelInput = document.getElementById('scrollAccel');
+const scrollSmoothInput = document.getElementById('scrollSmooth');
 
 function renderScrollSettings() {
   scrollInvertInput.checked = state.scroll.invert;
@@ -776,6 +777,8 @@ function renderScrollSettings() {
   scrollAccelInput.value = Math.round(state.scroll.acceleration * 100);
   document.getElementById('scrollSpeedValue').textContent = `${Number(state.scroll.speed).toFixed(1)}×`;
   document.getElementById('scrollAccelValue').textContent = `${Math.round(state.scroll.acceleration * 100)}%`;
+  scrollSmoothInput.value = Math.round(state.scroll.smoothing * 100);
+  document.getElementById('scrollSmoothValue').textContent = state.scroll.smoothing === 0 ? 'off' : `${Math.round(state.scroll.smoothing * 100)}%`;
 }
 
 scrollInvertInput.addEventListener('change', () => {
@@ -793,10 +796,16 @@ scrollAccelInput.addEventListener('input', () => {
   scheduleSave();
 });
 
+scrollSmoothInput.addEventListener('input', () => {
+  state.scroll.smoothing = parseInt(scrollSmoothInput.value, 10) / 100;
+  renderScrollSettings();
+  scheduleSave();
+});
+
 // Fills the whole UI from a config; used at startup and after an import.
 async function loadState(cfg) {
   state = cfg;
-  state.scroll = { invert: false, speed: 1, acceleration: 0, ...state.scroll };
+  state.scroll = { invert: false, speed: 1, acceleration: 0, smoothing: 0, ...state.scroll };
   selectedProfile = 'default';
   renderTheme();
   thresholdInput.value = state.scrollThreshold;
