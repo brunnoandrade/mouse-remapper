@@ -81,3 +81,14 @@ test('the UI, the validator and the Windows planner agree on the system action i
   const swift = fs.readFileSync(path.join(__dirname, '..', 'native', 'MouseRemapHelper.swift'), 'utf8');
   for (const id of validated) assert.ok(swift.includes(`"${id}"`), `MouseRemapHelper.swift does not handle "${id}"`);
 });
+
+test('the factory defaults are valid: "Restaurar padrões" writes them as they are', () => {
+  const { theme, ...portable } = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+  const { config, dropped } = sanitizeConfig(portable);
+  assert.equal(dropped, 0);
+  assert.deepEqual(config, portable, 'the validator must not change a default value');
+  assert.equal(theme, 'system');
+  assert.equal(DEFAULT_CONFIG.defaultProfile.enabled, true);
+  assert.deepEqual(DEFAULT_CONFIG.appProfiles, {});
+  assert.deepEqual(DEFAULT_CONFIG.scroll, { invert: false, speed: 1, acceleration: 0, smoothing: 0 });
+});

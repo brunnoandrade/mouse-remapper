@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('api', {
   getConfig: () => ipcRenderer.invoke('config:get'),
   setConfig: (cfg) => ipcRenderer.invoke('config:set', cfg),
   setTheme: (theme) => ipcRenderer.invoke('theme:set', theme),
+  resetConfig: () => ipcRenderer.invoke('config:reset'),
   exportConfig: () => ipcRenderer.invoke('config:export'),
   importConfig: () => ipcRenderer.invoke('config:import'),
   getPermission: () => ipcRenderer.invoke('permission:status'),

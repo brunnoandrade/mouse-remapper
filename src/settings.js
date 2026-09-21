@@ -667,7 +667,7 @@ function removeProfile(bundleId, name) {
   scheduleSave();
   renderProfiles();
   renderMappings();
-  renderDropdown(document.getElementById('appSearch').value);
+  // The app list is not touched here: it redraws itself whenever it is opened, and removing a profile must not open it.
 }
 
 function renderDropdown(filterText) {
@@ -697,10 +697,11 @@ function renderDropdown(filterText) {
         state.appProfiles[app.bundleIdentifier] = { mappings: [] };
         selectedProfile = app.bundleIdentifier;
         scheduleSave();
-        document.getElementById('appSearch').value = '';
+        appSearchInput.value = '';
+        closeAppDropdown();
+        appSearchInput.blur();
         renderProfiles();
         renderMappings();
-        renderDropdown('');
       });
       dropdown.appendChild(item);
     }
@@ -723,11 +724,28 @@ async function renderAppList() {
 
 const appSearchInput = document.getElementById('appSearch');
 const appDropdown = document.getElementById('appDropdown');
+const appCombo = appSearchInput.closest('.combo-wrapper');
+
+function closeAppDropdown() { appDropdown.hidden = true; }
+
 appSearchInput.addEventListener('focus', () => renderDropdown(appSearchInput.value));
+appSearchInput.addEventListener('click', () => renderDropdown(appSearchInput.value)); // focused already, list closed
 appSearchInput.addEventListener('input', () => renderDropdown(appSearchInput.value));
-appSearchInput.addEventListener('blur', () => {
-  setTimeout(() => { appDropdown.hidden = true; }, 100);
+
+// Pressing inside the list (its scrollbar, the gaps between items) must not take the focus away from the field,
+// or the list would close while it is being scrolled.
+appDropdown.addEventListener('mousedown', (e) => e.preventDefault());
+
+// The list closes when the user goes anywhere else: a click outside it, Tab to another control, Escape.
+document.addEventListener('mousedown', (e) => { if (!appCombo.contains(e.target)) closeAppDropdown(); }, true);
+document.addEventListener('focusin', (e) => { if (!appCombo.contains(e.target)) closeAppDropdown(); });
+appSearchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    closeAppDropdown();
+    appSearchInput.blur();
+  }
 });
+window.addEventListener('blur', closeAppDropdown); // switching to another window
 
 document.getElementById('refreshApps').addEventListener('click', renderAppList);
 
@@ -762,17 +780,21 @@ suppressScrollInput.addEventListener('change', () => {
   scheduleSave();
 });
 
-document.getElementById('resetBtn').addEventListener('click', () => {
-  const ok = confirm('Restaurar padrões?\n\nRemove os mapeamentos de todos os perfis e volta a sensibilidade do scroll ao valor original. Os perfis de apps e a aparência são mantidos.');
+document.getElementById('resetBtn').addEventListener('click', async () => {
+  const ok = confirm(
+    'Restaurar TODOS os padrões?\n\n' +
+    'Isso apaga todos os mapeamentos e perfis de apps, desfaz os ajustes de scroll (inverter, velocidade, aceleração, suavização e sensibilidade), ' +
+    'volta a aparência para "Sistema" e desliga o início no login.\n\n' +
+    'Não dá para desfazer. Use "Exportar…" antes se quiser guardar a configuração atual.'
+  );
   if (!ok) return;
-  state.defaultProfile.mappings = [];
-  for (const profile of Object.values(state.appProfiles)) profile.mappings = [];
-  state.scrollThreshold = 4;
-  state.suppressOriginalScroll = true;
-  thresholdInput.value = state.scrollThreshold;
-  suppressScrollInput.checked = state.suppressOriginalScroll;
-  renderMappings();
-  scheduleSave();
+  clearTimeout(saveTimer); // a pending autosave must not bring the old values back
+  saveTimer = null;
+  await loadState(await window.api.resetConfig());
+  const login = document.getElementById('loginItem');
+  if (!login.disabled) login.checked = false;
+  setStatus('Tudo voltou ao padrão.', 'ok');
+  statusTimer = setTimeout(() => setStatus(''), 2500);
 });
 
 // ---- Accessibility permission ----

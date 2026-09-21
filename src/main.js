@@ -165,6 +165,16 @@ ipcMain.handle('config:set', (_evt, cfg) => {
   writeConfig(cfg);
   return true;
 });
+// Back to a factory state: every value of the config (mappings, app profiles, scroll settings, appearance) and the
+// login item, which is an operating-system registration rather than a config value.
+ipcMain.handle('config:reset', () => {
+  const defaults = structuredClone(DEFAULT_CONFIG);
+  writeConfig(defaults);
+  nativeTheme.themeSource = 'system';
+  if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: false, ...loginQuery() });
+  return defaults;
+});
+
 const MAX_IMPORT_BYTES = 2 * 1024 * 1024;
 
 // The theme is a local preference, so exported files never carry it.
