@@ -82,10 +82,33 @@ function startHelper() {
   helperProcess = spawn(bin, [], { stdio: ['ignore', 'pipe', 'pipe'] });
   helperProcess.stdout.on('data', (d) => console.log(`[helper] ${d}`));
   helperProcess.stderr.on('data', (d) => console.log(`[helper] ${d}`));
+  helperProcess.on('error', (err) => {
+    console.log(`[helper] failed to start: ${err.message}`);
+    helperProcess = null;
+  });
   helperProcess.on('exit', (code) => {
     console.log(`[helper] exited with code ${code}`);
     helperProcess = null;
   });
+}
+
+// Whether the helper binary (the process that taps mouse events) has Accessibility access.
+function checkAccessibility() {
+  return new Promise((resolve) => {
+    const child = spawn(helperBinaryPath(), ['--check-permission'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.on('close', () => resolve(out.trim() === 'true'));
+    child.on('error', () => resolve(false));
+  });
+}
+
+// Without the permission the helper exits right away; retry once it has been granted.
+function watchHelper() {
+  setInterval(async () => {
+    if (helperProcess) return;
+    if (await checkAccessibility()) startHelper();
+  }, 3000);
 }
 
 function stopHelper() {
@@ -140,7 +163,9 @@ app.whenReady().then(() => {
   nativeTheme.themeSource = THEMES.includes(theme) ? theme : 'system';
   createTray();
   startHelper();
-  createSettingsWindow();
+  watchHelper();
+  // Launched by the login item: stay in the tray instead of popping up the window.
+  if (!app.getLoginItemSettings().wasOpenedAtLogin) createSettingsWindow();
 });
 
 app.on('window-all-closed', (e) => {
@@ -160,6 +185,17 @@ ipcMain.handle('theme:set', (_evt, theme) => {
   if (!THEMES.includes(theme)) return false;
   nativeTheme.themeSource = theme;
   writeConfig({ ...readConfig(), theme });
+  return true;
+});
+ipcMain.handle('permission:status', () => checkAccessibility());
+// Registering the dev Electron binary as a login item would be wrong, so only the packaged app can.
+ipcMain.handle('login:get', () => ({
+  supported: app.isPackaged,
+  enabled: app.isPackaged && app.getLoginItemSettings().openAtLogin,
+}));
+ipcMain.handle('login:set', (_evt, enabled) => {
+  if (!app.isPackaged) return false;
+  app.setLoginItemSettings({ openAtLogin: !!enabled });
   return true;
 });
 ipcMain.handle('prefs:accessibility', () => {

@@ -107,6 +107,7 @@
     padding: 9px 28px; font-size: 13px; cursor: pointer;
   }
   button.primary:active { opacity: 0.8; }
+  [hidden] { display: none !important; }
   .warn { color: #d97706; }
   .ok { color: #16a34a; }
   a { color: var(--accent); }
@@ -194,9 +195,9 @@
   <div class="layout">
     <aside class="sidebar">
       <div class="card" id="perm-card">
-        <div class="title">Permissão de Acessibilidade</div>
-        <div class="small" style="margin: 2px 0 10px;">Necessária para interceptar eventos do mouse no sistema.</div>
-        <button class="keybtn" onclick="openAccessibilityPrefs()">Abrir Preferências do Sistema</button>
+        <div class="title" id="permTitle">Permissão de Acessibilidade</div>
+        <div class="small" id="permText" style="margin: 2px 0 0;">Verificando...</div>
+        <button class="keybtn" id="permBtn" style="margin-top: 10px;" hidden>Abrir Preferências do Sistema</button>
       </div>
 
       <div class="card">
@@ -227,6 +228,16 @@
           <label class="switch"><input type="checkbox" id="suppressScroll" /><span class="slider"></span></label>
         </div>
       </div>
+
+      <div class="card">
+        <div class="row">
+          <div>
+            <div class="title">Iniciar no login</div>
+            <div class="small" id="loginHint">Abre o Mouse Remapper na bandeja ao ligar o Mac.</div>
+          </div>
+          <label class="switch"><input type="checkbox" id="loginItem" /><span class="slider"></span></label>
+        </div>
+      </div>
     </aside>
 
     <main class="main">
@@ -240,7 +251,7 @@
       </div>
       <div class="actions">
         <div id="status"></div>
-        <button class="primary" id="saveBtn">Salvar</button>
+        <button class="keybtn" id="resetBtn" style="width:auto;">Restaurar padrões</button>
       </div>
     </main>
   </div>

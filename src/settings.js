@@ -228,7 +228,7 @@ function renderMappings() {
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = mapping.enabled;
-    cb.onchange = () => { mapping.enabled = cb.checked; rule.classList.toggle('disabled', !cb.checked); };
+    cb.onchange = () => { mapping.enabled = cb.checked; rule.classList.toggle('disabled', !cb.checked); scheduleSave(); };
     switchLabel.appendChild(cb);
     switchLabel.appendChild(el('span', 'slider'));
     rule.appendChild(switchLabel);
@@ -254,6 +254,7 @@ function renderMappings() {
     remove.onclick = () => {
       state.mappings = state.mappings.filter((m) => m.id !== mapping.id);
       renderMappings();
+      scheduleSave();
     };
     rule.appendChild(remove);
 
@@ -384,6 +385,7 @@ function openEditor(existing) {
     else state.mappings.push(draft);
     editorDialog.close();
     renderMappings();
+    scheduleSave();
   };
   editorDialog.showModal();
 }
@@ -391,6 +393,30 @@ function openEditor(existing) {
 editorDialog.addEventListener('close', () => { if (stopDetecting) stopDetecting(); });
 document.getElementById('editorCancel').onclick = () => editorDialog.close();
 document.getElementById('addMapping').addEventListener('click', () => openEditor(null));
+
+let saveTimer = null;
+let statusTimer = null;
+
+// Every change funnels through here: a short debounce, then one write of the whole state.
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  setStatus('Salvando...');
+  saveTimer = setTimeout(saveNow, 400);
+}
+
+async function saveNow() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  await window.api.setConfig(state);
+  setStatus('Salvo automaticamente. As alterações já estão ativas.', 'ok');
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => setStatus(''), 2500);
+}
+
+// Closing the window inside the debounce window must not drop the last change.
+window.addEventListener('beforeunload', () => {
+  if (saveTimer) window.api.setConfig(state);
+});
 
 function setStatus(msg, kind) {
   const el = document.getElementById('status');
@@ -431,6 +457,7 @@ function renderChips() {
     removeBtn.title = 'Remover';
     removeBtn.addEventListener('click', () => {
       state.targetApps = state.targetApps.filter((id) => id !== bundleId);
+      scheduleSave();
       renderChips();
       renderDropdown(document.getElementById('appSearch').value);
     });
@@ -465,7 +492,10 @@ function renderDropdown(filterText) {
       item.appendChild(label);
       item.addEventListener('mousedown', (e) => {
         e.preventDefault(); // avoid losing focus before click registers
-        if (!state.targetApps.includes(app.bundleIdentifier)) state.targetApps.push(app.bundleIdentifier);
+        if (!state.targetApps.includes(app.bundleIdentifier)) {
+          state.targetApps.push(app.bundleIdentifier);
+          scheduleSave();
+        }
         document.getElementById('appSearch').value = '';
         renderChips();
         renderDropdown('');
@@ -517,26 +547,79 @@ document.getElementById('themeSelect').addEventListener('click', async (e) => {
   await window.api.setTheme(state.theme); // applies immediately and persists
 });
 
+const thresholdInput = document.getElementById('threshold');
+const suppressScrollInput = document.getElementById('suppressScroll');
+
+thresholdInput.addEventListener('change', () => {
+  const value = parseFloat(thresholdInput.value);
+  state.scrollThreshold = Math.min(30, Math.max(0.5, Number.isFinite(value) ? value : 4));
+  thresholdInput.value = state.scrollThreshold;
+  scheduleSave();
+});
+suppressScrollInput.addEventListener('change', () => {
+  state.suppressOriginalScroll = suppressScrollInput.checked;
+  scheduleSave();
+});
+
+document.getElementById('resetBtn').addEventListener('click', () => {
+  const ok = confirm('Restaurar padrões?\n\nRemove todos os mapeamentos e volta a sensibilidade do scroll ao valor original. A lista de apps e a aparência são mantidas.');
+  if (!ok) return;
+  state.mappings = [];
+  state.scrollThreshold = 4;
+  state.suppressOriginalScroll = true;
+  thresholdInput.value = state.scrollThreshold;
+  suppressScrollInput.checked = state.suppressOriginalScroll;
+  renderMappings();
+  scheduleSave();
+});
+
+// ---- Accessibility permission ----
+
+function renderPermission(granted) {
+  const card = document.getElementById('perm-card');
+  card.classList.toggle('granted', granted);
+  document.getElementById('permTitle').textContent = granted ? '✓ Acessibilidade concedida' : 'Permissão de Acessibilidade';
+  const text = document.getElementById('permText');
+  text.textContent = granted
+    ? 'O remapeamento está pronto para funcionar.'
+    : 'Necessária para interceptar eventos do mouse. Sem ela, nenhum mapeamento funciona. O app detecta a permissão sozinho assim que você a conceder.';
+  text.className = granted ? 'small ok' : 'small warn';
+  document.getElementById('permBtn').hidden = granted;
+}
+
+async function refreshPermission() {
+  if (document.hidden) return;
+  renderPermission(await window.api.getPermission());
+}
+
+document.getElementById('permBtn').addEventListener('click', () => window.api.openAccessibilityPrefs());
+
+// ---- Login item ----
+
+async function initLoginItem() {
+  const input = document.getElementById('loginItem');
+  const { supported, enabled } = await window.api.getLogin();
+  input.checked = enabled;
+  if (!supported) {
+    input.disabled = true;
+    document.getElementById('loginHint').textContent = 'Disponível apenas no app empacotado (npm run dist).';
+  }
+  input.addEventListener('change', async () => {
+    const ok = await window.api.setLogin(input.checked);
+    if (!ok) input.checked = !input.checked;
+  });
+}
+
 async function init() {
   state = await window.api.getConfig();
   renderTheme();
   renderMappings();
-  document.getElementById('threshold').value = state.scrollThreshold;
-  document.getElementById('suppressScroll').checked = state.suppressOriginalScroll;
+  thresholdInput.value = state.scrollThreshold;
+  suppressScrollInput.checked = state.suppressOriginalScroll;
+  initLoginItem();
+  refreshPermission();
+  setInterval(refreshPermission, 2000);
   await renderAppList();
 }
-
-document.getElementById('saveBtn').addEventListener('click', async () => {
-  state.scrollThreshold = parseFloat(document.getElementById('threshold').value) || 4;
-  state.suppressOriginalScroll = document.getElementById('suppressScroll').checked;
-  await window.api.setConfig(state);
-  setStatus('Salvo. As alterações já estão ativas.', 'ok');
-  setTimeout(() => setStatus(''), 3000);
-});
-
-function openAccessibilityPrefs() {
-  window.api.openAccessibilityPrefs();
-}
-window.openAccessibilityPrefs = openAccessibilityPrefs;
 
 init();

@@ -26,6 +26,13 @@ func iconBase64(for app: NSRunningApplication) -> String? {
     iconBase64(from: app.icon)
 }
 
+// MARK: - Permission check mode (used by the settings UI to show the real Accessibility status)
+
+if CommandLine.arguments.contains("--check-permission") {
+    print(AXIsProcessTrusted() ? "true" : "false")
+    exit(0)
+}
+
 // MARK: - Resolve apps mode (used to look up name/icon for apps that
 // are configured as targets but may not currently be running)
 

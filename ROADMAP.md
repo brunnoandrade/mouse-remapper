@@ -13,15 +13,15 @@ Legenda: ✅ feito · 🚧 em andamento · ⬜ pendente
 - ✅ Tema Sistema / Claro / Escuro
 - ✅ Lista genérica de regras "gatilho → ação" (tecla, ação de sistema, clique ou abrir app), com editor
 
-## Fase 1: base sólida
+## Fase 1: base sólida ✅
 
-- ⬜ Detectar a permissão de Acessibilidade e mostrar o status real (`AXIsProcessTrusted` no helper)
-- ⬜ Iniciar no login (`app.setLoginItemSettings`, com toggle nas configurações)
-- ⬜ Salvar automaticamente, no lugar do botão Salvar
+- ✅ Detectar a permissão de Acessibilidade e mostrar o status real (`--check-permission` no helper); o helper reinicia sozinho quando a permissão é concedida
+- ✅ Iniciar no login (`app.setLoginItemSettings`, com toggle nas configurações; só no app empacotado, sobe direto na bandeja)
+- ✅ Salvar automaticamente, no lugar do botão Salvar
 - ✅ Validação de conflitos: um gatilho não pode ter duas regras
-- ⬜ "Restaurar padrões"
+- ✅ "Restaurar padrões" (mapeamentos e sensibilidade; mantém apps e aparência)
 
-## Fase 2: mais gatilhos e ações 🚧
+## Fase 2: mais gatilhos e ações ✅
 
 - ✅ Botões laterais (voltar/avançar) no event tap
 - ✅ Botões extras (5+), por seleção ou detecção do botão
